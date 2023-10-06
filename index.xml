@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Terminal</title>
+    <link>https://strajabot.com/</link>
+    <description>Recent content on Terminal</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en</language><atom:link href="https://strajabot.com/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>About</title>
+      <link>https://strajabot.com/about/</link>
+      <pubDate>Thu, 28 Sep 2023 00:00:00 +0000</pubDate>
+      
+      <guid>https://strajabot.com/about/</guid>
+      <description>Hello there My name is Strahinja.
+I&amp;rsquo;m a third year Computer Engineering student at the School of Electrical Engineering, University of Belgrade.
+I started programming at the age of 14 when I developed my first Minecraft plugin, which became my passion that I kept pursuing all the way through high school. This passion for programming Minecraft plugins helped me become proficient in the Java programming language. At that time I got interested in backend web development, which led me to learn about NodeJS, databases and Typescript.</description>
+      <content>&lt;h2 id=&#34;hello-there&#34;&gt;Hello there&lt;/h2&gt;
+&lt;p&gt;My name is Strahinja.&lt;/p&gt;
+&lt;p&gt;I&amp;rsquo;m a third year Computer Engineering student at the School of Electrical Engineering, University of Belgrade.&lt;/p&gt;
+&lt;p&gt;I started programming at the age of 14 when I developed my first Minecraft plugin, which became my passion that I kept pursuing all the way through high school. This passion for programming Minecraft plugins helped me become proficient in the Java programming language. At that time I got interested in backend web development, which led me to learn about NodeJS, databases and Typescript.&lt;/p&gt;
+&lt;p&gt;After I had been sharpening my Minecraft plugin programming skills for 3-4 years, I started working as a freelance Minecraft plugin developer, and worked through the latter years of high school. I wrote code that was responsible for interfacing with PostgreSQL for storing player data, and RabbitMQ for passing messages between server and proxy instances. I also learned how to use Git and build systems like Gradle.&lt;/p&gt;
+&lt;p&gt;In the year 2021, I enrolled at the University of Belgrade. During my first and second year of university I found my passion for low-level programming and hardware. I am currently working very hard on learning about operating systems, computer architecture and oragnization, as well as digital design.&lt;/p&gt;
+</content>
+    </item>
+    
+  </channel>
+</rss>
