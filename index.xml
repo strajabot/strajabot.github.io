@@ -7,6 +7,31 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>en</language><atom:link href="https://strajabot.com/index.xml" rel="self" type="application/rss+xml" />
     <item>
+      <title>Showcase</title>
+      <link>https://strajabot.com/showcase/</link>
+      <pubDate>Sat, 07 Oct 2023 00:00:00 +0000</pubDate>
+      
+      <guid>https://strajabot.com/showcase/</guid>
+      <description>nessy During the 4th semester, me and a couple of my friends designed and implemented a computer system on a FPGA board for extra credit in our Computer Architecture course. Our project, named nessy, is a computer system inspired by the NES console. It includes:
+A CPU compatible with the MOS 6502 instruction set A GPU that can draw a pixel, line and rectangle. It uses the board&amp;rsquo;s SDRAM to store the framebuffer.</description>
+      <content>&lt;h2 id=&#34;nessy&#34;&gt;nessy&lt;/h2&gt;
+&lt;p&gt;During the 4th semester, me and a couple of my friends designed and implemented a computer system on a FPGA board for extra credit in our Computer Architecture course. Our project, named nessy, is a computer system inspired by the NES console. It includes:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;A CPU compatible with the MOS 6502 instruction set&lt;/li&gt;
+&lt;li&gt;A GPU that can draw a pixel, line and rectangle. It uses the board&amp;rsquo;s SDRAM to store the framebuffer. The GPU outputs an 800x600 video to the screen over VGA.&lt;/li&gt;
+&lt;li&gt;Two keyboard controllers that can be used to emulate up to 4 NES gamepads.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Link: &lt;a href=&#34;https://github.com/BogdanW3/nessy&#34;&gt;https://github.com/BogdanW3/nessy&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id=&#34;nessy-cpu-sim&#34;&gt;nessy-cpu-sim&lt;/h2&gt;
+&lt;p&gt;While we were working on nessy, we needed a way to simulate running code on the CPU to test for compatibilty. To do this we implemented a way run the CPU in Verilator, and wrote a C++ wrapper that simulates the memory and memory mapped registers. The tests can be written in C, C++  and assembly, and are compiled using llvm-mos using our custom platform support. After the code runs, registers and memory are checked against expected values, to check if the instruction is correctly implemented.&lt;/p&gt;
+&lt;p&gt;Link: &lt;a href=&#34;https://github.com/strajabot/nessy-cpu-sim&#34;&gt;https://github.com/strajabot/nessy-cpu-sim&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id=&#34;llvm-mos-nessy&#34;&gt;llvm-mos-nessy&lt;/h2&gt;
+&lt;p&gt;Since optimzed assembly for the MOS 6502 instruction set is really difficult to write by hand, we wanted to use an existing compiler to write our tests and the game. We settled on using llvm-mos since it seemed the easiest to work with. However since we didn&amp;rsquo;t implement the NES PPU and APU, we coudn&amp;rsquo;t use the preexisting platform support, which led me to port the code to our platform. This includes changes to the linker script and common runtime.&lt;/p&gt;
+&lt;p&gt;Link: &lt;a href=&#34;https://github.com/strajabot/llvm-mos-nessy&#34;&gt;https://github.com/strajabot/llvm-mos-nessy&lt;/a&gt;&lt;/p&gt;
+</content>
+    </item>
+    
+    <item>
       <title>About</title>
       <link>https://strajabot.com/about/</link>
       <pubDate>Thu, 28 Sep 2023 00:00:00 +0000</pubDate>

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  
+    <title>Showcase :: Terminal</title>
+  
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="nessy During the 4th semester, me and a couple of my friends designed and implemented a computer system on a FPGA board for extra credit in our Computer Architecture course. Our project, named nessy, is a computer system inspired by the NES console. It includes:
+A CPU compatible with the MOS 6502 instruction set A GPU that can draw a pixel, line and rectangle. It uses the board&amp;rsquo;s SDRAM to store the framebuffer." />
+<meta name="keywords" content="" />
+
+  <meta name="robots" content="noodp" />
+
+<link rel="canonical" href="https://strajabot.com/showcase/" />
+
+
+
+
+
+
+  
+  
+  
+  
+  
+  <link rel="stylesheet" href="https://strajabot.com/styles.css">
+
+
+
+
+
+
+
+  <link rel="shortcut icon" href="https://strajabot.com/img/theme-colors/pink.png">
+  <link rel="apple-touch-icon" href="https://strajabot.com/img/theme-colors/pink.png">
+
+
+
+<meta name="twitter:card" content="summary" />
+
+
+
+<meta property="og:locale" content="en" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="Showcase">
+<meta property="og:description" content="nessy During the 4th semester, me and a couple of my friends designed and implemented a computer system on a FPGA board for extra credit in our Computer Architecture course. Our project, named nessy, is a computer system inspired by the NES console. It includes:
+A CPU compatible with the MOS 6502 instruction set A GPU that can draw a pixel, line and rectangle. It uses the board&amp;rsquo;s SDRAM to store the framebuffer." />
+<meta property="og:url" content="https://strajabot.com/showcase/" />
+<meta property="og:site_name" content="Terminal" />
+
+  
+    <meta property="og:image" content="https://strajabot.com/img/favicon/pink.png">
+  
+
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="627">
+
+
+  <meta property="article:published_time" content="2023-10-07 00:00:00 &#43;0000 UTC" />
+
+
+
+
+
+
+
+
+
+
+
+
+</head>
+<body class="pink">
+
+
+<div class="container center headings--one-size">
+
+  <header class="header">
+  <div class="header__inner">
+    <div class="header__logo">
+      <a href="/">
+  <div class="logo">
+    Strajabot
+  </div>
+</a>
+
+    </div>
+    
+      <ul class="menu menu--mobile">
+  <li class="menu__trigger">Menu&nbsp;▾</li>
+  <li>
+    <ul class="menu__dropdown">
+      
+        
+          <li><a href="/about">About</a></li>
+        
+      
+        
+          <li><a href="/showcase">Showcase</a></li>
+        
+      
+      
+    </ul>
+  </li>
+</ul>
+
+    
+    
+  </div>
+  
+    <nav class="navigation-menu">
+  <ul class="navigation-menu__inner menu--desktop">
+    
+      
+        
+          <li><a href="/about" >About</a></li>
+        
+      
+        
+          <li><a href="/showcase" >Showcase</a></li>
+        
+      
+      
+    
+  </ul>
+</nav>
+
+  
+</header>
+
+
+  <div class="content">
+    
+<article class="post">
+  <h1 class="post-title">
+    <a href="https://strajabot.com/showcase/">Showcase</a>
+  </h1>
+  <div class="post-meta"><time class="post-date">2023-10-07</time><span class="post-author">strajabot</span></div>
+
+  
+  
+
+
+  
+
+  <div class="post-content"><div>
+        <h2 id="nessy">nessy<a href="#nessy" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>During the 4th semester, me and a couple of my friends designed and implemented a computer system on a FPGA board for extra credit in our Computer Architecture course. Our project, named nessy, is a computer system inspired by the NES console. It includes:</p>
+<ul>
+<li>A CPU compatible with the MOS 6502 instruction set</li>
+<li>A GPU that can draw a pixel, line and rectangle. It uses the board&rsquo;s SDRAM to store the framebuffer. The GPU outputs an 800x600 video to the screen over VGA.</li>
+<li>Two keyboard controllers that can be used to emulate up to 4 NES gamepads.</li>
+</ul>
+<p>Link: <a href="https://github.com/BogdanW3/nessy">https://github.com/BogdanW3/nessy</a></p>
+<h2 id="nessy-cpu-sim">nessy-cpu-sim<a href="#nessy-cpu-sim" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>While we were working on nessy, we needed a way to simulate running code on the CPU to test for compatibilty. To do this we implemented a way run the CPU in Verilator, and wrote a C++ wrapper that simulates the memory and memory mapped registers. The tests can be written in C, C++  and assembly, and are compiled using llvm-mos using our custom platform support. After the code runs, registers and memory are checked against expected values, to check if the instruction is correctly implemented.</p>
+<p>Link: <a href="https://github.com/strajabot/nessy-cpu-sim">https://github.com/strajabot/nessy-cpu-sim</a></p>
+<h2 id="llvm-mos-nessy">llvm-mos-nessy<a href="#llvm-mos-nessy" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>Since optimzed assembly for the MOS 6502 instruction set is really difficult to write by hand, we wanted to use an existing compiler to write our tests and the game. We settled on using llvm-mos since it seemed the easiest to work with. However since we didn&rsquo;t implement the NES PPU and APU, we coudn&rsquo;t use the preexisting platform support, which led me to port the code to our platform. This includes changes to the linker script and common runtime.</p>
+<p>Link: <a href="https://github.com/strajabot/llvm-mos-nessy">https://github.com/strajabot/llvm-mos-nessy</a></p>
+
+      </div></div>
+
+  
+
+  
+    
+
+  
+</article>
+
+  </div>
+
+  
+    <footer class="footer">
+  <div class="footer__inner">
+    
+      <div class="copyright">
+        <span>© 2023 Powered by <a href="https://gohugo.io">Hugo</a></span>
+    
+      <span>:: <a href="https://github.com/panr/hugo-theme-terminal" target="_blank">Theme</a> made by <a href="https://github.com/panr" target="_blank">panr</a></span>
+      </div>
+  </div>
+</footer>
+
+
+
+
+
+
+<script type="text/javascript" src="/bundle.min.js"></script>
+
+
+
+
+
+  
+</div>
+
+</body>
+</html>
