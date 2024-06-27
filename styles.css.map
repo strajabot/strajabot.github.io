@@ -1,7 +1,7 @@
 {
 	"version": 3,
 	"file": "styles.css",
-	"sourceRoot": "/home/strajabot/code/website",
+	"sourceRoot": "/home/strajabot/Data/code/website",
 	"sources": [
 		"css/base.scss",
 		"themes/terminal/assets/css/variables.scss",

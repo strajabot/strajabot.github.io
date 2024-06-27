@@ -6,7 +6,351 @@
     <description>Recent content in Posts on Terminal</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en</language>
-    <lastBuildDate>Mon, 19 Feb 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://strajabot.com/posts/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Fri, 21 Jun 2024 18:08:40 +0200</lastBuildDate><atom:link href="https://strajabot.com/posts/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>RISC-V: Fast Scalar strlen() in Assembly</title>
+      <link>https://strajabot.com/posts/fast-scalar-strlen-riscv/</link>
+      <pubDate>Fri, 21 Jun 2024 18:08:40 +0200</pubDate>
+      
+      <guid>https://strajabot.com/posts/fast-scalar-strlen-riscv/</guid>
+      <description>Introduction This is the first part of the series of articles I will be doing during my Google Summer of Code Project. This project constitutes of writing optimized assembly routines for FreeBSD&amp;rsquo;s libc string functions in RISC-V assembly.
+Hardware Limitations String functions are commonly used to demonstrate SIMD techinques. Most of the time, these examples use SIMD instructions to achieve a performance improvement. This would be the case for my project too, if it weren&amp;rsquo;t for one problem: Hardware support for the V (Vector operations) extension.</description>
+      <content>&lt;h2 id=&#34;introduction&#34;&gt;Introduction&lt;/h2&gt;
+&lt;p&gt;This is the first part of the series of articles I will be doing during my &lt;a href=&#34;https://wiki.freebsd.org/SummerOfCode2024Projects/PortAmd64SIMDLibcOptimizationsToRiscv64&#34;&gt;Google Summer of Code Project&lt;/a&gt;. This project constitutes of writing optimized assembly routines for FreeBSD&amp;rsquo;s libc string functions in RISC-V assembly.&lt;/p&gt;
+&lt;h2 id=&#34;hardware-limitations&#34;&gt;Hardware Limitations&lt;/h2&gt;
+&lt;p&gt;String functions are commonly used to demonstrate SIMD techinques. Most of the time, these examples use SIMD instructions to achieve a performance improvement. This would be the case for my project too, if it weren&amp;rsquo;t for one problem: Hardware support for the V (Vector operations) extension. Because of this limitation, a decision was made not to use the V extension for the optimizations, so that the improvements can be noticed on a broader spectrum of hardware. The decision was also made to have multiple implementations based on which extensions are supported by the core. This post will only consider instructions that are a part of RV64G (IMA, Zicsr, Zifencei).&lt;/p&gt;
+&lt;h2 id=&#34;swar&#34;&gt;SWAR&lt;/h2&gt;
+&lt;p&gt;To mitigate the lack of SIMD instructions we will be using SWAR (SIMD Within A Register) techinques to process more data at a time inside of general purpose registers.&lt;/p&gt;
+&lt;h2 id=&#34;trivial-strlen&#34;&gt;Trivial strlen()&lt;/h2&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; style=&#34;color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;&lt;span style=&#34;color:#66d9ef&#34;&gt;size_t&lt;/span&gt; &lt;span style=&#34;color:#a6e22e&#34;&gt;strlen&lt;/span&gt;(&lt;span style=&#34;color:#66d9ef&#34;&gt;const&lt;/span&gt; &lt;span style=&#34;color:#66d9ef&#34;&gt;char&lt;/span&gt; &lt;span style=&#34;color:#f92672&#34;&gt;*&lt;/span&gt;str) {
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    &lt;span style=&#34;color:#66d9ef&#34;&gt;const&lt;/span&gt; &lt;span style=&#34;color:#66d9ef&#34;&gt;char&lt;/span&gt; &lt;span style=&#34;color:#f92672&#34;&gt;*&lt;/span&gt;s;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    &lt;span style=&#34;color:#66d9ef&#34;&gt;for&lt;/span&gt; (s &lt;span style=&#34;color:#f92672&#34;&gt;=&lt;/span&gt; str; &lt;span style=&#34;color:#f92672&#34;&gt;*&lt;/span&gt;s; &lt;span style=&#34;color:#f92672&#34;&gt;++&lt;/span&gt;s);
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    &lt;span style=&#34;color:#66d9ef&#34;&gt;return&lt;/span&gt; (s &lt;span style=&#34;color:#f92672&#34;&gt;-&lt;/span&gt; str);
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;And, when compiled, this code emits roughly the following assembly&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code class=&#34;language-riscvasm&#34; data-lang=&#34;riscvasm&#34;&gt;strlen:
+        lbu     a5,0(a0)
+        beq     a5,zero,.L4
+        mv      a5,a0
+.L3:
+        lbu     a4,1(a5)
+        addi    a5,a5,1
+        bne     a4,zero,.L3
+        sub     a0,a5,a0
+        ret
+.L4:
+        li      a0,0
+        ret
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;The example code loads 1 byte (one character) into &lt;code&gt;a5&lt;/code&gt; using the &lt;code&gt;lbu&lt;/code&gt; (load byte unsigend) instruction. We can increase performance by using the The RISC-V &lt;code&gt;ld&lt;/code&gt; (load double word) instruction which can load 8 bytes (eight characters) at at time into a register. However we need to take one thing into consideration:&lt;/p&gt;
+&lt;h2 id=&#34;memory-access-alignment&#34;&gt;Memory access alignment&lt;/h2&gt;
+&lt;p&gt;We say that a memory access operation is naturally aligned when the address of the data being accessed is an integer multiple of the size of data being accessed.&lt;/p&gt;
+&lt;p&gt;Example:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;lb&lt;/code&gt; access is always naturally aligned, because &lt;code&gt;address % 1 == 0&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;lw&lt;/code&gt; access for address &lt;code&gt;0x1004&lt;/code&gt; is naturally aligned, because the size of data being accessed is 4 bytes and &lt;code&gt;0x1004 % 4 == 0&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ld&lt;/code&gt; access for address &lt;code&gt;0x1004&lt;/code&gt; isn&amp;rsquo;t naturally aligned, because the size of data being accessed is 8 bytes and &lt;code&gt;0x1004 % 8 != 0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Naturally aligned loads and stores are guaranteed to not raise a address-missaligned exception.&lt;/p&gt;
+&lt;p&gt;Depending on the execution environment, missaligned loads and stores may be implemented in hardware, or emulated in software using an exception handler, or cause a fatal exception. (&lt;a href=&#34;https://five-embeddev.com/riscv-user-isa-manual/latest-latex/rv32.html#sec:rv32:ldst&#34;&gt;More precise info&lt;/a&gt;). Because they might be emulated in software, missaligned accesses may lead to orders of magnitude worse performance then aligned ones.&lt;/p&gt;
+&lt;p&gt;For the reasons above, we want all loads and stores in our code to be naturally aligned. Because &lt;code&gt;void* str&lt;/code&gt; may not be eightbyte aligned, when loading the first eightbyte we first want to align the address. This can easily be done by &lt;code&gt;str_ptr = str &amp;amp; ~0b111&lt;/code&gt;. In case  that &lt;code&gt;str_ptr != str&lt;/code&gt; the first load is going to load &lt;code&gt;str - str_ptr&lt;/code&gt; extra bytes that are before the start of the string. We fill these extra bytes with &lt;code&gt;0xFF&lt;/code&gt; to avoid handling the case where they contained a zerobyte. All the following loads are guaranteed to be aligned because the load address will be &lt;code&gt;str_ptr + 8*i&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Now we can start implementing this in assembly:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code class=&#34;language-riscvasm&#34; data-lang=&#34;riscvasm&#34;&gt;/*
+ * register a0 - void* str
+ */
+.globl strlen
+.type strlen, @function
+strlen:
+	/* 
+	 * register a0 - char* str_start
+	 * register a1 - char* str_ptr
+	 * register a2 - char[8] iter
+	 */
+
+	/* check alignment of str_start */
+	andi a1, a0, ~0b111
+	ld a2, (a1)
+	beq a1, a0, .Lhas_zero
+
+    /* 
+     * fill bytes before str_start with 0xFF 
+     * to avoid finding zero before str_start
+     */
+	slli t2, a0, 3
+	li t3, -1			# load 0xFFFFFFFFFFFFFFFF
+	sll t3, t3, t2		# shift mask by unaligned bytes		
+	not t3, t3			# mask bytes before str_start
+	or a2, a2, t3		# fill with 0xFF
+
+	/*
+     * iteration of has_zero
+     */
+
+.Lloop_has_zero:
+	ld a2, 8(a1)
+	addi a1, a1, 8	# move str_ptr to next eightbyte
+.Lhas_zero:
+    /*
+     * check if a2 contains a zerobyte
+     * if no zerobyte found, continue loop
+     */
+
+.Lfind_zero:
+    /*
+     * Find the byte index of first zerobyte in a2
+	 */
+    ret
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;Now that we have loaded 8 consecutive characters into a register we need to search them for a zero byte. For reasons that will become clear later, we will split this process into two steps:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Determining if the register contains a zero byte&lt;/li&gt;
+&lt;li&gt;Finding the index of the zero byte&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;determining-if-the-register-contains-a-zero-byte&#34;&gt;Determining if the register contains a zero byte&lt;/h2&gt;
+&lt;p&gt;There is one obvious approach to checking if the register contains a zero byte:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; style=&#34;color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;&lt;span style=&#34;color:#66d9ef&#34;&gt;int&lt;/span&gt; &lt;span style=&#34;color:#a6e22e&#34;&gt;has_zero&lt;/span&gt;(&lt;span style=&#34;color:#66d9ef&#34;&gt;uint64_t&lt;/span&gt; value) {
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    &lt;span style=&#34;color:#66d9ef&#34;&gt;for&lt;/span&gt;(&lt;span style=&#34;color:#66d9ef&#34;&gt;int&lt;/span&gt; i&lt;span style=&#34;color:#f92672&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color:#ae81ff&#34;&gt;0&lt;/span&gt;; i&lt;span style=&#34;color:#f92672&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color:#ae81ff&#34;&gt;8&lt;/span&gt;; i&lt;span style=&#34;color:#f92672&#34;&gt;++&lt;/span&gt;) {
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;        &lt;span style=&#34;color:#66d9ef&#34;&gt;if&lt;/span&gt;((value &lt;span style=&#34;color:#f92672&#34;&gt;&amp;amp;&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;0xFF&lt;/span&gt;) &lt;span style=&#34;color:#f92672&#34;&gt;==&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;0x00&lt;/span&gt;)
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;            &lt;span style=&#34;color:#66d9ef&#34;&gt;return&lt;/span&gt; true;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;        value &lt;span style=&#34;color:#f92672&#34;&gt;&amp;gt;&amp;gt;=&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;8&lt;/span&gt;;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    }
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    &lt;span style=&#34;color:#66d9ef&#34;&gt;return&lt;/span&gt; false;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;However we can do much better than this, in fact we can even avoid the for loop and if entirely using the following technique:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; style=&#34;color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;&lt;span style=&#34;color:#66d9ef&#34;&gt;uint64_t&lt;/span&gt; &lt;span style=&#34;color:#a6e22e&#34;&gt;has_zero&lt;/span&gt;(&lt;span style=&#34;color:#66d9ef&#34;&gt;uint64_t&lt;/span&gt; value) {
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    &lt;span style=&#34;color:#66d9ef&#34;&gt;return&lt;/span&gt; (value &lt;span style=&#34;color:#f92672&#34;&gt;-&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;0x0101010101010101ull&lt;/span&gt;) &lt;span style=&#34;color:#f92672&#34;&gt;&amp;amp;&lt;/span&gt; &lt;span style=&#34;color:#f92672&#34;&gt;~&lt;/span&gt;value &lt;span style=&#34;color:#f92672&#34;&gt;&amp;amp;&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;0x8080808080808080ull&lt;/span&gt;;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;For every byte equal to zero, this function will return the highest bit of that byte equal to 1.
+This approach works beacuse of the following:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;The expression &lt;code&gt;value - 0x0101010101010101ull&lt;/code&gt; will set the highest bit for every byte that is either &lt;code&gt;0x00&lt;/code&gt; or greater than &lt;code&gt;0x80&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;The expression &lt;code&gt;~value &amp;amp; 0x8080808080808080ull&lt;/code&gt; will set the highest bit for every byte whose highest bit was &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;By and-ing (1) and (2) the return value will have the highest bit of each byte set only when that byte is equal to &lt;code&gt;0x00&lt;/code&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;We can check if the eightbyte contains a zero by passing it to &lt;code&gt;has_zero&lt;/code&gt; and checking if the return value is non-zero. This can be implemented in assembly like so:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code class=&#34;language-riscvasm&#34; data-lang=&#34;riscvasm&#34;&gt;/*
+ * register a0 - void* str
+ */
+.globl strlen
+.type strlen, @function
+strlen:
+	/* 
+	 * register a0 - char* str_start
+	 * register a1 - char* str_ptr
+	 * register a2 - char[8] iter
+	 */
+
+    /* load constants for has_zero */
+	li t0, 0x0101010101010101
+	slli t1, t0, 7				# 0x8080808080808080, avoid li
+
+	/* check alignment of str_start */
+	andi a1, a0, ~0b111
+	ld a2, (a1)
+	beq a1, a0, .Lhas_zero
+
+    /* 
+     * fill bytes before str_start with 0xFF 
+     * to avoid finding zero before str_start
+     */
+	slli t2, a0, 3
+	li t3, -1			# load 0xFFFFFFFFFFFFFFFF
+	sll t3, t3, t2		# shift mask by unaligned bytes		
+	not t3, t3			# mask bytes before str_start
+	or a2, a2, t3		# fill with 0xFF
+
+    /* iteration of has_zero */
+	not t2, a2
+	sub a2, a2, t0
+	and a2, a2, t2
+	and a2, a2, t1
+
+	bnez a2, .Lfind_zero
+
+.Lloop_has_zero:
+	ld a2, 8(a1)
+	addi a1, a1, 8	# move str_ptr to next eightbyte
+.Lhas_zero:
+    not t2, a2
+	sub a2, a2, t0
+	and a2, a2, t2
+	and a2, a2, t1
+
+	beqz a2, .Lloop_has_zero
+
+.Lfind_zero:
+    /*
+     * Find the byte index of first zerobyte in a2
+     */
+    ret
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;finding-the-index-of-the-zero-byte&#34;&gt;Finding the index of the zero byte&lt;/h2&gt;
+&lt;p&gt;Now that we have figured out how to check if the eightbyte contains a zero, we need to get the index of that zero byte because that&amp;rsquo;s the end of the string.&lt;/p&gt;
+&lt;p&gt;The best solution would be to use a instruction that does a &lt;a href=&#34;https://en.wikipedia.org/wiki/Find_first_set&#34;&gt;bitscan forward&lt;/a&gt; so that we can get the index on the first 1 bit and convert that into a byte index. However RV64G doesn&amp;rsquo;t contain such bit manipulation instructions (The B extension does). This means we need to implement this in software.&lt;/p&gt;
+&lt;p&gt;First we are going to isolate the least significant 1 bit (LS1B). The standard way to isolate it is &lt;code&gt;ls1b = value &amp;amp; -value&lt;/code&gt;. After doing this, our register will be left with only one bit set, and that is the highest bit of the first zerobyte. Now we need to map all of the possibilities into the correct byte indexes.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;VALUE&lt;/th&gt;
+&lt;th&gt;BYTE INDEX&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;0x00000000000000&lt;strong&gt;8&lt;/strong&gt;0&lt;/td&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;0x000000000000&lt;strong&gt;8&lt;/strong&gt;000&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;0x0000000000&lt;strong&gt;8&lt;/strong&gt;00000&lt;/td&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;0x00000000&lt;strong&gt;8&lt;/strong&gt;0000000&lt;/td&gt;
+&lt;td&gt;3&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;0x000000&lt;strong&gt;8&lt;/strong&gt;000000000&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;0x0000&lt;strong&gt;8&lt;/strong&gt;00000000000&lt;/td&gt;
+&lt;td&gt;5&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;0x00&lt;strong&gt;8&lt;/strong&gt;0000000000000&lt;/td&gt;
+&lt;td&gt;6&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;0x&lt;strong&gt;8&lt;/strong&gt;000000000000000&lt;/td&gt;
+&lt;td&gt;7&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;There are only 8 posibliites for the values that we need to map into 8 byte indicies. We can make use of the mathematical property of base 2 numbers: &lt;code&gt;number * 2^exp = number &amp;lt;&amp;lt; exp&lt;/code&gt; to calculate the byte index.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; style=&#34;color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;&lt;span style=&#34;color:#66d9ef&#34;&gt;uint64_t&lt;/span&gt; &lt;span style=&#34;color:#a6e22e&#34;&gt;find_zero&lt;/span&gt;(&lt;span style=&#34;color:#66d9ef&#34;&gt;uint64_t&lt;/span&gt; value) {
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    value &lt;span style=&#34;color:#f92672&#34;&gt;&amp;amp;=&lt;/span&gt; &lt;span style=&#34;color:#f92672&#34;&gt;-&lt;/span&gt;value;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    value &lt;span style=&#34;color:#f92672&#34;&gt;&amp;gt;&amp;gt;=&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;7&lt;/span&gt;;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    value &lt;span style=&#34;color:#f92672&#34;&gt;=&lt;/span&gt; value &lt;span style=&#34;color:#f92672&#34;&gt;*&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;0x0001020304050607ull&lt;/span&gt;;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;    &lt;span style=&#34;color:#66d9ef&#34;&gt;return&lt;/span&gt; value &lt;span style=&#34;color:#f92672&#34;&gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span style=&#34;color:#ae81ff&#34;&gt;56&lt;/span&gt;;
+&lt;/span&gt;&lt;/span&gt;&lt;span style=&#34;display:flex;&#34;&gt;&lt;span&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Explanation of the code line by line.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Line&lt;/th&gt;
+&lt;th&gt;Explanation&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;value &amp;amp;= -value;&lt;/td&gt;
+&lt;td&gt;Isolate the LS1B to only consider the first zero.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;value &amp;raquo;= 7;&lt;/td&gt;
+&lt;td&gt;Shift LS1B from &lt;code&gt;8 * byte_idx + 7&lt;/code&gt; to &lt;code&gt;8 * byte_idx&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;value = value * 0x0001020304050607ull;&lt;/td&gt;
+&lt;td&gt;Multiply with constant to get the byte index in the highest byte utilising the property above.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;return value &amp;raquo; 56;&lt;/td&gt;
+&lt;td&gt;Return the highest byte.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;Now that we understand the algorithm we can complete the implementation.&lt;/p&gt;
+&lt;h2 id=&#34;final-code&#34;&gt;Final code&lt;/h2&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code class=&#34;language-riscvasm&#34; data-lang=&#34;riscvasm&#34;&gt;/*
+ * register a0 - void* str
+ */
+.globl strlen
+.type strlen, @function
+strlen:
+	/* 
+	 * register a0 - char* str_start
+	 * register a1 - char* str_ptr
+	 * register a2 - char[8] iter
+	 */
+
+    /* load constants for has_zero */
+	li t0, 0x0101010101010101
+	slli t1, t0, 7				# 0x8080808080808080, avoid li
+
+	/* check alignment of str_start */
+	andi a1, a0, ~0b111
+	ld a2, (a1)
+	beq a1, a0, .Lhas_zero
+
+    /* 
+     * fill bytes before str_start with 0xFF 
+     * to avoid finding zero before str_start
+     */
+	slli t2, a0, 3
+	li t3, -1			# load 0xFFFFFFFFFFFFFFFF
+	sll t3, t3, t2		# shift mask by unaligned bytes		
+	not t3, t3			# mask bytes before str_start
+	or a2, a2, t3		# fill with 0xFF
+
+    /* iteration of has_zero */
+	not t2, a2
+	sub a2, a2, t0
+	and a2, a2, t2
+	and a2, a2, t1
+
+	bnez a2, .Lfind_zero
+
+.Lloop_has_zero:
+	ld a2, 8(a1)
+	addi a1, a1, 8	# move str_ptr to next eightbyte
+.Lhas_zero:
+    not t2, a2
+	sub a2, a2, t0
+	and a2, a2, t2
+	and a2, a2, t1
+
+	beqz a2, .Lloop_has_zero
+
+.Lfind_zero:
+	neg a3, a2	#a3 = -iter
+	and t1, a2, a3		#t1 = (iter &amp;amp; -iter)
+
+	li t0, 0x0001020304050607
+	srli t1, t1, 7
+	mul	t1, t1, t0
+	srli t1, t1, 56
+
+	add a1, a1, t1
+	sub a0, a1, a0
+    ret
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;performance-metrics&#34;&gt;Performance metrics&lt;/h2&gt;
+&lt;p&gt;Performance was measured on a SiFive Unmatched development board using &lt;a href=&#34;https://github.com/clausecker/strperf&#34;&gt;strperf&lt;/a&gt;.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;The Trivial implementation was the code from the start of the article compiled using &lt;code&gt;clang&lt;/code&gt; with &lt;code&gt;-O2&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;The FreeBSD C base implementation is the &lt;a href=&#34;https://github.com/freebsd/freebsd-src/blob/main/lib/libc/string/strlen.c&#34;&gt;multiplatfrom implementation&lt;/a&gt;. It&amp;rsquo;s used for the kernel, and when a machine dependent implementation doesn&amp;rsquo;t exist.&lt;/li&gt;
+&lt;li&gt;RISC-V optimized implementation is the one from this article.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;| In B/s  | Trivial impl                    | FreeBSD base impl                         | RISC-V optimized impl                  |
+|---------|---------------------------------|-------------------------------------------|----------------------------------------|
+| Short   |                    216.5Mi ± 0% | 220.3Mi ± 14%         ~ (p=0.446 n=20+21) |  296.8Mi ± 0%   +37.12% (p=0.000 n=20) |
+| Mid     |                    284.8Mi ± 0% | 477.6Mi ±  3%   +67.67% (p=0.000 n=20+21) |  621.3Mi ± 0%  +118.11% (p=0.000 n=20) |
+| Long    |                    318.6Mi ± 1% | 956.9Mi ±  0%  +200.38% (p=0.000 n=20+21) | 1076.7Mi ± 0%  +237.99% (p=0.000 n=20) |
+| geomean |                    269.8Mi      | 465.2Mi         +72.42%                   |  583.4Mi       +116.22%                |
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;further-optimizations&#34;&gt;Further optimizations&lt;/h2&gt;
+&lt;p&gt;For further optimization, the main loop can possibly be unrolled. Also in the current implementation there is at least one istruction to be saved for anyone that can find it ;)&lt;/p&gt;
+&lt;h2 id=&#34;further-reading&#34;&gt;Further Reading&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://summerofcode.withgoogle.com/&#34;&gt;Google Summer of Code&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://riscv.org/wp-content/uploads/2017/05/riscv-spec-v2.2.pdf&#34;&gt;RISC-V User ISA&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://five-embeddev.com/quickref/instructions.html#-rv64&#34;&gt;RISC-V Instruction Quick Reference&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://mcyoung.xyz/2023/11/27/simd-base64/&#34;&gt;Designing a SIMD Algorithm from Scratch&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</content>
+    </item>
+    
     <item>
       <title>RISC-V: Managing concurrency using spinlocks</title>
       <link>https://strajabot.com/posts/kernel-concurrency-riscv/</link>
