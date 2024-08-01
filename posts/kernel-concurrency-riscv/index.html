@@ -1,638 +1,42 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  
-    <title>RISC-V: Managing concurrency using spinlocks :: Terminal</title>
-  
-  <meta http-equiv="content-type" content="text/html; charset=utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="In this article we will explore using spinlocks for synchronization and implement them on the RISC-V architecture." />
-<meta name="keywords" content="RISC-V, Assembly, Spinlock, Concurrency, Synchronization" />
-
-  <meta name="robots" content="noodp" />
-
-<link rel="canonical" href="https://strajabot.com/posts/kernel-concurrency-riscv/" />
-
-
-  
-
-
-
-
-
-
-  
-  
-  
-  
-  
-  <link rel="stylesheet" href="https://strajabot.com/styles.css">
-
-
-
-
-
-
-
-  <link rel="shortcut icon" href="https://strajabot.com/img/theme-colors/pink.png">
-  <link rel="apple-touch-icon" href="https://strajabot.com/img/theme-colors/pink.png">
-
-
-
-<meta name="twitter:card" content="summary" />
-
-
-
-<meta property="og:locale" content="en" />
-<meta property="og:type" content="article" />
-<meta property="og:title" content="RISC-V: Managing concurrency using spinlocks">
-<meta property="og:description" content="In this article we will explore using spinlocks for synchronization and implement them on the RISC-V architecture." />
-<meta property="og:url" content="https://strajabot.com/posts/kernel-concurrency-riscv/" />
-<meta property="og:site_name" content="Terminal" />
-
-  
-  
-  <meta property="og:image" content="https://strajabot.com/">
-
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="627">
-
-
-  <meta property="article:published_time" content="2024-02-19 00:00:00 &#43;0000 UTC" />
-
-
-
-
-
-
-
-
-
-
-
-
-</head>
-<body class="pink">
-
-
-<div class="container center headings--one-size">
-
-  <header class="header">
-  <div class="header__inner">
-    <div class="header__logo">
-      <a href="/">
-  <div class="logo">
-    Strajabot
-  </div>
-</a>
-
-    </div>
-    
-      <ul class="menu menu--mobile">
-  <li class="menu__trigger">Menu&nbsp;▾</li>
-  <li>
-    <ul class="menu__dropdown">
-      
-        
-          <li><a href="/about">About</a></li>
-        
-      
-        
-          <li><a href="/showcase">Showcase</a></li>
-        
-      
-      
-    </ul>
-  </li>
-</ul>
-
-    
-    
-  </div>
-  
-    <nav class="navigation-menu">
-  <ul class="navigation-menu__inner menu--desktop">
-    
-      
-        
-          <li><a href="/about" >About</a></li>
-        
-      
-        
-          <li><a href="/showcase" >Showcase</a></li>
-        
-      
-      
-    
-  </ul>
-</nav>
-
-  
-</header>
-
-
-  <div class="content">
-    
-<article class="post">
-  <h1 class="post-title">
-    <a href="https://strajabot.com/posts/kernel-concurrency-riscv/">RISC-V: Managing concurrency using spinlocks</a>
-  </h1>
-  <div class="post-meta"><time class="post-date">2024-02-19</time><span class="post-author">strajabot</span><span class="post-reading-time">9 min read (1707 words)</span></div>
-
-  
-    <span class="post-tags">
-      
-      #<a href="https://strajabot.com/tags/risc-v/">RISC-V</a>&nbsp;
-      
-      #<a href="https://strajabot.com/tags/assembly/">Assembly</a>&nbsp;
-      
-      #<a href="https://strajabot.com/tags/concurrency/">Concurrency</a>&nbsp;
-      
-    </span>
-  
-  
-
-
-  
-
-  <div class="post-content"><div>
-        <h2 id="why-do-we-need-synchronization">Why do we need synchronization?<a href="#why-do-we-need-synchronization" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
-<p>When coding a multicore operating system, to minimize overhead associated with executing system calls, we want to be able to run kernel code on multiple cores at the same time. To do this correctly, we need to solve the critical section problem, a problem that arises frequently when implementing a multiprocessor, preemptive kernel.</p>
-<p>To illustrate the critical section problem, we will take a close look at a memory allocator for fixed size blocks. This allocator will function by keeping track of free blocks by keeping them inside a linked list.</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span><span style="color:#66d9ef">struct</span>  free_block {
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">struct</span> free_block<span style="color:#f92672">*</span> next
-</span></span><span style="display:flex;"><span>	<span style="color:#75715e">//...
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>}
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">struct</span> free_block<span style="color:#f92672">*</span> <span style="color:#66d9ef">volatile</span> head; 
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">void</span><span style="color:#f92672">*</span> <span style="color:#a6e22e">alloc_block</span>()
-</span></span><span style="display:flex;"><span>{
-</span></span><span style="display:flex;"><span>            <span style="color:#66d9ef">void</span><span style="color:#f92672">*</span> block <span style="color:#f92672">=</span> (<span style="color:#66d9ef">void</span><span style="color:#f92672">*</span>) head;
-</span></span><span style="display:flex;"><span>            head <span style="color:#f92672">=</span> head<span style="color:#f92672">-&gt;</span>next;
-</span></span><span style="display:flex;"><span>            <span style="color:#66d9ef">return</span> block;
-</span></span><span style="display:flex;"><span>}
-</span></span></code></pre></div><p>When we think about it, the compiled version of the code above could look like:</p>
-<pre tabindex="0"><code class="language-riscvasm" data-lang="riscvasm">alloc_block:
+<!doctype html><html lang=en><head><title>RISC-V: Managing concurrency using spinlocks :: Terminal</title>
+<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><meta name=description content="In this article we will explore using spinlocks for synchronization and implement them on the RISC-V architecture."><meta name=keywords content="RISC-V,Assembly,Spinlock,Concurrency,Synchronization"><meta name=robots content="noodp"><link rel=canonical href=https://strajabot.com/posts/kernel-concurrency-riscv/><link rel=stylesheet href=https://strajabot.com/styles.css><link rel="shortcut icon" href=https://strajabot.com/img/theme-colors/pink.png><link rel=apple-touch-icon href=https://strajabot.com/img/theme-colors/pink.png><meta name=twitter:card content="summary"><meta property="og:locale" content="en"><meta property="og:type" content="article"><meta property="og:title" content="RISC-V: Managing concurrency using spinlocks"><meta property="og:description" content="In this article we will explore using spinlocks for synchronization and implement them on the RISC-V architecture."><meta property="og:url" content="https://strajabot.com/posts/kernel-concurrency-riscv/"><meta property="og:site_name" content="Terminal"><meta property="og:image" content="https://strajabot.com/"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="627"><meta property="article:published_time" content="2024-02-19 00:00:00 +0000 UTC"></head><body class=pink><div class="container center headings--one-size"><header class=header><div class=header__inner><div class=header__logo><a href=/><div class=logo>Strajabot</div></a></div><ul class="menu menu--mobile"><li class=menu__trigger>Menu&nbsp;▾</li><li><ul class=menu__dropdown><li><a href=/about>About</a></li><li><a href=/showcase>Showcase</a></li></ul></li></ul></div><nav class=navigation-menu><ul class="navigation-menu__inner menu--desktop"><li><a href=/about>About</a></li><li><a href=/showcase>Showcase</a></li></ul></nav></header><div class=content><article class=post><h1 class=post-title><a href=https://strajabot.com/posts/kernel-concurrency-riscv/>RISC-V: Managing concurrency using spinlocks</a></h1><div class=post-meta><time class=post-date>2024-02-19</time><span class=post-author>strajabot</span><span class=post-reading-time>9 min read (1707 words)</span></div><span class=post-tags>#<a href=https://strajabot.com/tags/risc-v/>RISC-V</a>&nbsp;
+#<a href=https://strajabot.com/tags/assembly/>Assembly</a>&nbsp;
+#<a href=https://strajabot.com/tags/concurrency/>Concurrency</a>&nbsp;</span><div class=post-content><div><h2 id=why-do-we-need-synchronization>Why do we need synchronization?<a href=#why-do-we-need-synchronization class=hanchor arialabel=Anchor>&#8983;</a></h2><p>When coding a multicore operating system, to minimize overhead associated with executing system calls, we want to be able to run kernel code on multiple cores at the same time. To do this correctly, we need to solve the critical section problem, a problem that arises frequently when implementing a multiprocessor, preemptive kernel.</p><p>To illustrate the critical section problem, we will take a close look at a memory allocator for fixed size blocks. This allocator will function by keeping track of free blocks by keeping them inside a linked list.</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#66d9ef>struct</span>  free_block {
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>struct</span> free_block<span style=color:#f92672>*</span> next
+</span></span><span style=display:flex><span>	<span style=color:#75715e>//...
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>}
+</span></span><span style=display:flex><span><span style=color:#66d9ef>struct</span> free_block<span style=color:#f92672>*</span> <span style=color:#66d9ef>volatile</span> head; 
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>void</span><span style=color:#f92672>*</span> <span style=color:#a6e22e>alloc_block</span>()
+</span></span><span style=display:flex><span>{
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>void</span><span style=color:#f92672>*</span> block <span style=color:#f92672>=</span> (<span style=color:#66d9ef>void</span><span style=color:#f92672>*</span>) head;
+</span></span><span style=display:flex><span>            head <span style=color:#f92672>=</span> head<span style=color:#f92672>-&gt;</span>next;
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span> block;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>When we think about it, the compiled version of the code above could look like:</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>alloc_block:
 	ld a0, head		#a0 &lt;- head 
 	ld a1, 0(a0)	#a1 &lt;- head-&gt;next
 	sd a1, head		#head &lt;- a1
 	ret				#return value is in a0
-</code></pre><p>Since <code>alloc_block</code> can be executing on multiple processor cores and we haven&rsquo;t implemented any synchronization, the following situation can occur:</p>
-<pre tabindex="0"><code>// INITIAL VALUES
+</code></pre><p>Since <code>alloc_block</code> can be executing on multiple processor cores and we haven&rsquo;t implemented any synchronization, the following situation can occur:</p><pre tabindex=0><code>// INITIAL VALUES
 head = 0x1000;
 head-&gt;next = 0x2000;
-</code></pre><table>
-<thead>
-<tr>
-<th>TIME</th>
-<th>THREAD 1 (ON CORE 1)</th>
-<th>THREAD 2 (ON CORE 2)</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1.</td>
-<td>ld a0, head [head=0x1000]</td>
-<td>?</td>
-</tr>
-<tr>
-<td>2.</td>
-<td>ld a1, 0(a0) [head-&gt;next=0x2000]</td>
-<td>ld a0, head [head=0x1000]</td>
-</tr>
-<tr>
-<td>3.</td>
-<td>/</td>
-<td>ld a1, 0(a0) [head-&gt;next=0x2000]</td>
-</tr>
-<tr>
-<td>4.</td>
-<td>sd a1, head [head=0x2000]</td>
-<td>/</td>
-</tr>
-<tr>
-<td>5.</td>
-<td>ret [return a0=0x1000]</td>
-<td>sd a1, head [head=0x2000]</td>
-</tr>
-<tr>
-<td>6.</td>
-<td>?</td>
-<td>ret [return a0=0x1000]</td>
-</tr>
-</tbody>
-</table>
-<p>If we look closely at the return value, we realize that both threads have allocated the same block, which is not correct behavior because now both threads are sharing a block that they believe to have exclusive access to. Mistakes like this inside the kernel can cause catastrophic failures of user code and the operating system, depending on what the allocated memory is used for.</p>
-<p>The issue in this code arises from the fact that changing the head of the list is not an atomic operation, leading to THREAD 2 being able to read the old head value before THREAD 1 gets to update it by storing the new value.</p>
-<p>To find a solution to this problem, we will think about the correct behavior. The correct  behavior is that once either of the threads starts the operation by executing <code>void* block = (void*) head;</code> no other threads can start executing the operation until the thread that started the operation finishes executing  <code>head = head-&gt;next;</code>. This way it is impossible for threads to read the old value of <code>head</code>.</p>
-<p>So, for the code to behave correctly, it needs to <em>lock</em> the <em>section</em> before starting the operation, and it needs to <em>unlock</em> the <em>section</em> when it finishes the operation so that other threads can start their operations.</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span><span style="color:#66d9ef">struct</span>  free_block {
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">struct</span> free_block<span style="color:#f92672">*</span> next
-</span></span><span style="display:flex;"><span>	<span style="color:#75715e">//...
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>}
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">int</span> section;
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">struct</span> free_block<span style="color:#f92672">*</span> <span style="color:#66d9ef">volatile</span> head; 
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">void</span><span style="color:#f92672">*</span> <span style="color:#a6e22e">alloc_block</span>()
-</span></span><span style="display:flex;"><span>{
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">lock</span>(<span style="color:#f92672">&amp;</span>section);
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">void</span><span style="color:#f92672">*</span> block <span style="color:#f92672">=</span> (<span style="color:#66d9ef">void</span><span style="color:#f92672">*</span>) head;
-</span></span><span style="display:flex;"><span>	head <span style="color:#f92672">=</span> head<span style="color:#f92672">-&gt;</span>next;
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">unlock</span>(<span style="color:#f92672">&amp;</span>section);
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> block;
-</span></span><span style="display:flex;"><span>}
-</span></span></code></pre></div><p>We now need to implement <code>lock</code> and <code>unlock</code> .</p>
-<h2 id="void-lockint-section"><code>void lock(int* section);</code><a href="#void-lockint-section" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
-
-
-
-<div class="goat svg-container ">
-  
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      font-family="Menlo,Lucida Console,monospace"
-      
-        viewBox="0 0 472 329"
-      >
-      <g transform='translate(8,16)'>
-<path d='M 16,0 L 112,0' fill='none' stroke='currentColor'></path>
-<path d='M 16,32 L 64,32' fill='none' stroke='currentColor'></path>
-<path d='M 64,32 L 112,32' fill='none' stroke='currentColor'></path>
-<path d='M 72,48 L 176,48' fill='none' stroke='currentColor'></path>
-<path d='M 216,48 L 240,48' fill='none' stroke='currentColor'></path>
-<path d='M 120,96 L 176,96' fill='none' stroke='currentColor'></path>
-<path d='M 240,128 L 264,128' fill='none' stroke='currentColor'></path>
-<path d='M 8,176 L 120,176' fill='none' stroke='currentColor'></path>
-<path d='M 8,208 L 120,208' fill='none' stroke='currentColor'></path>
-<path d='M 216,224 L 240,224' fill='none' stroke='currentColor'></path>
-<path d='M 8,272 L 120,272' fill='none' stroke='currentColor'></path>
-<path d='M 8,304 L 120,304' fill='none' stroke='currentColor'></path>
-<path d='M 20,72 L 64,72' fill='none' stroke='currentColor'></path>
-<path d='M 64,72 L 108,72' fill='none' stroke='currentColor'></path>
-<path d='M 20,120 L 108,120' fill='none' stroke='currentColor'></path>
-<path d='M 8,176 L 8,208' fill='none' stroke='currentColor'></path>
-<path d='M 8,272 L 8,304' fill='none' stroke='currentColor'></path>
-<path d='M 16,0 L 16,32' fill='none' stroke='currentColor'></path>
-<path d='M 64,32 L 64,64' fill='none' stroke='currentColor'></path>
-<path d='M 64,128 L 64,160' fill='none' stroke='currentColor'></path>
-<path d='M 64,224 L 64,256' fill='none' stroke='currentColor'></path>
-<path d='M 112,0 L 112,32' fill='none' stroke='currentColor'></path>
-<path d='M 120,176 L 120,208' fill='none' stroke='currentColor'></path>
-<path d='M 120,272 L 120,304' fill='none' stroke='currentColor'></path>
-<path d='M 176,48 L 176,96' fill='none' stroke='currentColor'></path>
-<path d='M 240,48 L 240,128' fill='none' stroke='currentColor'></path>
-<path d='M 240,128 L 240,224' fill='none' stroke='currentColor'></path>
-<path d='M 8,96 L 20,72' fill='none' stroke='currentColor'></path>
-<path d='M 108,120 L 120,96' fill='none' stroke='currentColor'></path>
-<path d='M 8,96 L 20,120' fill='none' stroke='currentColor'></path>
-<path d='M 108,72 L 120,96' fill='none' stroke='currentColor'></path>
-<path d='M 64,120 L 64,128' fill='none' stroke='currentColor'></path>
-<path d='M 64,216 L 64,224' fill='none' stroke='currentColor'></path>
-<polygon points='72.000000,64.000000 60.000000,58.400002 60.000000,69.599998' fill='currentColor' transform='rotate(90.000000, 64.000000, 64.000000)'></polygon>
-<path d='M 64,160 L 64,168' fill='none' stroke='currentColor'></path>
-<polygon points='80.000000,160.000000 68.000000,154.399994 68.000000,165.600006' fill='currentColor' transform='rotate(90.000000, 64.000000, 160.000000)'></polygon>
-<path d='M 64,256 L 64,264' fill='none' stroke='currentColor'></path>
-<polygon points='80.000000,256.000000 68.000000,250.399994 68.000000,261.600006' fill='currentColor' transform='rotate(90.000000, 64.000000, 256.000000)'></polygon>
-<polygon points='80.000000,48.000000 68.000000,42.400002 68.000000,53.599998' fill='currentColor' transform='rotate(180.000000, 72.000000, 48.000000)'></polygon>
-<polygon points='272.000000,128.000000 260.000000,122.400002 260.000000,133.600006' fill='currentColor' transform='rotate(0.000000, 264.000000, 128.000000)'></polygon>
-<text text-anchor='middle' x='0' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='100' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='24' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='196' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='24' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='100' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='32' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='196' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='32' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='100' fill='currentColor' style='font-size:1em'>c</text>
-<text text-anchor='middle' x='40' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='196' fill='currentColor' style='font-size:1em'>c</text>
-<text text-anchor='middle' x='40' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='20' fill='currentColor' style='font-size:1em'>L</text>
-<text text-anchor='middle' x='48' y='100' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='48' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='196' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='48' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='20' fill='currentColor' style='font-size:1em'>O</text>
-<text text-anchor='middle' x='56' y='100' fill='currentColor' style='font-size:1em'>i</text>
-<text text-anchor='middle' x='56' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='196' fill='currentColor' style='font-size:1em'>i</text>
-<text text-anchor='middle' x='56' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='292' fill='currentColor' style='font-size:1em'>R</text>
-<text text-anchor='middle' x='64' y='20' fill='currentColor' style='font-size:1em'>C</text>
-<text text-anchor='middle' x='64' y='100' fill='currentColor' style='font-size:1em'>o</text>
-<text text-anchor='middle' x='64' y='196' fill='currentColor' style='font-size:1em'>o</text>
-<text text-anchor='middle' x='64' y='292' fill='currentColor' style='font-size:1em'>E</text>
-<text text-anchor='middle' x='72' y='20' fill='currentColor' style='font-size:1em'>K</text>
-<text text-anchor='middle' x='72' y='100' fill='currentColor' style='font-size:1em'>n</text>
-<text text-anchor='middle' x='72' y='196' fill='currentColor' style='font-size:1em'>n</text>
-<text text-anchor='middle' x='72' y='292' fill='currentColor' style='font-size:1em'>T</text>
-<text text-anchor='middle' x='80' y='148' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='80' y='244' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='88' y='100' fill='currentColor' style='font-size:1em'>=</text>
-<text text-anchor='middle' x='88' y='148' fill='currentColor' style='font-size:1em'>r</text>
-<text text-anchor='middle' x='88' y='196' fill='currentColor' style='font-size:1em'>=</text>
-<text text-anchor='middle' x='88' y='244' fill='currentColor' style='font-size:1em'>r</text>
-<text text-anchor='middle' x='96' y='148' fill='currentColor' style='font-size:1em'>u</text>
-<text text-anchor='middle' x='96' y='244' fill='currentColor' style='font-size:1em'>u</text>
-<text text-anchor='middle' x='104' y='100' fill='currentColor' style='font-size:1em'>0</text>
-<text text-anchor='middle' x='104' y='148' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='104' y='196' fill='currentColor' style='font-size:1em'>1</text>
-<text text-anchor='middle' x='104' y='244' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='128' y='84' fill='currentColor' style='font-size:1em'>f</text>
-<text text-anchor='middle' x='136' y='84' fill='currentColor' style='font-size:1em'>a</text>
-<text text-anchor='middle' x='144' y='84' fill='currentColor' style='font-size:1em'>l</text>
-<text text-anchor='middle' x='152' y='84' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='160' y='84' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='280' y='132' fill='currentColor' style='font-size:1em'>M</text>
-<text text-anchor='middle' x='288' y='132' fill='currentColor' style='font-size:1em'>u</text>
-<text text-anchor='middle' x='296' y='132' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='304' y='132' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='320' y='132' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='328' y='132' fill='currentColor' style='font-size:1em'>x</text>
-<text text-anchor='middle' x='336' y='132' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='344' y='132' fill='currentColor' style='font-size:1em'>c</text>
-<text text-anchor='middle' x='352' y='132' fill='currentColor' style='font-size:1em'>u</text>
-<text text-anchor='middle' x='360' y='132' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='368' y='132' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='384' y='132' fill='currentColor' style='font-size:1em'>a</text>
-<text text-anchor='middle' x='392' y='132' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='400' y='132' fill='currentColor' style='font-size:1em'>o</text>
-<text text-anchor='middle' x='408' y='132' fill='currentColor' style='font-size:1em'>m</text>
-<text text-anchor='middle' x='416' y='132' fill='currentColor' style='font-size:1em'>i</text>
-<text text-anchor='middle' x='424' y='132' fill='currentColor' style='font-size:1em'>c</text>
-<text text-anchor='middle' x='432' y='132' fill='currentColor' style='font-size:1em'>a</text>
-<text text-anchor='middle' x='440' y='132' fill='currentColor' style='font-size:1em'>l</text>
-<text text-anchor='middle' x='448' y='132' fill='currentColor' style='font-size:1em'>l</text>
-<text text-anchor='middle' x='456' y='132' fill='currentColor' style='font-size:1em'>y</text>
-</g>
-
-    </svg>
-  
-</div>
-<h2 id="void-unlockint-section"><code>void unlock(int* section);</code><a href="#void-unlockint-section" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
-
-
-
-<div class="goat svg-container ">
-  
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      font-family="Menlo,Lucida Console,monospace"
-      
-        viewBox="0 0 480 249"
-      >
-      <g transform='translate(8,16)'>
-<path d='M 16,0 L 112,0' fill='none' stroke='currentColor'></path>
-<path d='M 16,32 L 64,32' fill='none' stroke='currentColor'></path>
-<path d='M 64,32 L 112,32' fill='none' stroke='currentColor'></path>
-<path d='M 8,96 L 120,96' fill='none' stroke='currentColor'></path>
-<path d='M 8,128 L 120,128' fill='none' stroke='currentColor'></path>
-<path d='M 8,192 L 120,192' fill='none' stroke='currentColor'></path>
-<path d='M 8,224 L 120,224' fill='none' stroke='currentColor'></path>
-<path d='M 8,96 L 8,128' fill='none' stroke='currentColor'></path>
-<path d='M 8,192 L 8,224' fill='none' stroke='currentColor'></path>
-<path d='M 16,0 L 16,32' fill='none' stroke='currentColor'></path>
-<path d='M 64,32 L 64,80' fill='none' stroke='currentColor'></path>
-<path d='M 64,144 L 64,176' fill='none' stroke='currentColor'></path>
-<path d='M 112,0 L 112,32' fill='none' stroke='currentColor'></path>
-<path d='M 120,96 L 120,128' fill='none' stroke='currentColor'></path>
-<path d='M 120,192 L 120,224' fill='none' stroke='currentColor'></path>
-<path d='M 64,136 L 64,144' fill='none' stroke='currentColor'></path>
-<path d='M 64,80 L 64,88' fill='none' stroke='currentColor'></path>
-<polygon points='80.000000,80.000000 68.000000,74.400002 68.000000,85.599998' fill='currentColor' transform='rotate(90.000000, 64.000000, 80.000000)'></polygon>
-<path d='M 64,176 L 64,184' fill='none' stroke='currentColor'></path>
-<polygon points='80.000000,176.000000 68.000000,170.399994 68.000000,181.600006' fill='currentColor' transform='rotate(90.000000, 64.000000, 176.000000)'></polygon>
-<text text-anchor='middle' x='0' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='116' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='24' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='116' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='32' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='20' fill='currentColor' style='font-size:1em'>U</text>
-<text text-anchor='middle' x='40' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='116' fill='currentColor' style='font-size:1em'>c</text>
-<text text-anchor='middle' x='40' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='20' fill='currentColor' style='font-size:1em'>N</text>
-<text text-anchor='middle' x='48' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='116' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='48' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='20' fill='currentColor' style='font-size:1em'>L</text>
-<text text-anchor='middle' x='56' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='116' fill='currentColor' style='font-size:1em'>i</text>
-<text text-anchor='middle' x='56' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='212' fill='currentColor' style='font-size:1em'>R</text>
-<text text-anchor='middle' x='64' y='20' fill='currentColor' style='font-size:1em'>O</text>
-<text text-anchor='middle' x='64' y='116' fill='currentColor' style='font-size:1em'>o</text>
-<text text-anchor='middle' x='64' y='212' fill='currentColor' style='font-size:1em'>E</text>
-<text text-anchor='middle' x='72' y='20' fill='currentColor' style='font-size:1em'>C</text>
-<text text-anchor='middle' x='72' y='116' fill='currentColor' style='font-size:1em'>n</text>
-<text text-anchor='middle' x='72' y='212' fill='currentColor' style='font-size:1em'>T</text>
-<text text-anchor='middle' x='80' y='20' fill='currentColor' style='font-size:1em'>K</text>
-<text text-anchor='middle' x='80' y='68' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='88' y='68' fill='currentColor' style='font-size:1em'>r</text>
-<text text-anchor='middle' x='88' y='116' fill='currentColor' style='font-size:1em'>=</text>
-<text text-anchor='middle' x='96' y='68' fill='currentColor' style='font-size:1em'>u</text>
-<text text-anchor='middle' x='104' y='68' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='104' y='116' fill='currentColor' style='font-size:1em'>0</text>
-</g>
-
-    </svg>
-  
-</div>
-<p>However for implementing <code>lock</code> we must avoid any implementations that compile to LOAD -&gt; BRANCH -&gt; STORE because writing the <code>lock</code> function like that will make it susceptible to the same problem we had in <code>alloc_block</code>. To implement this behavior correctly we turn to atomic instructions.</p>
-<h2 id="amoswap-rd-rs2-rs1"><code>amoswap rd, rs2, (rs1)</code><a href="#amoswap-rd-rs2-rs1" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
-<p><code>amoswap</code> is an instruction from  the A extension which allows us to swap the data from <code>rs2 =&gt; (rs1) =&gt; rd</code> as a single atomic operation. Using this instruction we can implement <code>lock</code> like so:</p>
-
-
-
-<div class="goat svg-container ">
-  
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      font-family="Menlo,Lucida Console,monospace"
-      
-        viewBox="0 0 360 409"
-      >
-      <g transform='translate(8,16)'>
-<path d='M 16,0 L 112,0' fill='none' stroke='currentColor'></path>
-<path d='M 16,32 L 64,32' fill='none' stroke='currentColor'></path>
-<path d='M 64,32 L 112,32' fill='none' stroke='currentColor'></path>
-<path d='M 16,80 L 112,80' fill='none' stroke='currentColor'></path>
-<path d='M 16,112 L 112,112' fill='none' stroke='currentColor'></path>
-<path d='M 72,144 L 296,144' fill='none' stroke='currentColor'></path>
-<path d='M 16,176 L 256,176' fill='none' stroke='currentColor'></path>
-<path d='M 16,208 L 64,208' fill='none' stroke='currentColor'></path>
-<path d='M 64,208 L 256,208' fill='none' stroke='currentColor'></path>
-<path d='M 120,272 L 296,272' fill='none' stroke='currentColor'></path>
-<path d='M 8,352 L 120,352' fill='none' stroke='currentColor'></path>
-<path d='M 8,384 L 120,384' fill='none' stroke='currentColor'></path>
-<path d='M 20,248 L 64,248' fill='none' stroke='currentColor'></path>
-<path d='M 64,248 L 108,248' fill='none' stroke='currentColor'></path>
-<path d='M 20,296 L 108,296' fill='none' stroke='currentColor'></path>
-<path d='M 8,352 L 8,384' fill='none' stroke='currentColor'></path>
-<path d='M 16,0 L 16,32' fill='none' stroke='currentColor'></path>
-<path d='M 16,80 L 16,112' fill='none' stroke='currentColor'></path>
-<path d='M 16,176 L 16,208' fill='none' stroke='currentColor'></path>
-<path d='M 64,32 L 64,64' fill='none' stroke='currentColor'></path>
-<path d='M 64,128 L 64,160' fill='none' stroke='currentColor'></path>
-<path d='M 64,208 L 64,240' fill='none' stroke='currentColor'></path>
-<path d='M 64,304 L 64,336' fill='none' stroke='currentColor'></path>
-<path d='M 112,0 L 112,32' fill='none' stroke='currentColor'></path>
-<path d='M 112,80 L 112,112' fill='none' stroke='currentColor'></path>
-<path d='M 120,352 L 120,384' fill='none' stroke='currentColor'></path>
-<path d='M 256,176 L 256,208' fill='none' stroke='currentColor'></path>
-<path d='M 296,144 L 296,272' fill='none' stroke='currentColor'></path>
-<path d='M 8,272 L 20,248' fill='none' stroke='currentColor'></path>
-<path d='M 108,296 L 120,272' fill='none' stroke='currentColor'></path>
-<path d='M 8,272 L 20,296' fill='none' stroke='currentColor'></path>
-<path d='M 108,248 L 120,272' fill='none' stroke='currentColor'></path>
-<path d='M 64,120 L 64,128' fill='none' stroke='currentColor'></path>
-<path d='M 64,296 L 64,304' fill='none' stroke='currentColor'></path>
-<path d='M 64,64 L 64,72' fill='none' stroke='currentColor'></path>
-<polygon points='80.000000,64.000000 68.000000,58.400002 68.000000,69.599998' fill='currentColor' transform='rotate(90.000000, 64.000000, 64.000000)'></polygon>
-<path d='M 64,160 L 64,168' fill='none' stroke='currentColor'></path>
-<polygon points='80.000000,160.000000 68.000000,154.399994 68.000000,165.600006' fill='currentColor' transform='rotate(90.000000, 64.000000, 160.000000)'></polygon>
-<polygon points='72.000000,240.000000 60.000000,234.399994 60.000000,245.600006' fill='currentColor' transform='rotate(90.000000, 64.000000, 240.000000)'></polygon>
-<path d='M 64,336 L 64,344' fill='none' stroke='currentColor'></path>
-<polygon points='80.000000,336.000000 68.000000,330.399994 68.000000,341.600006' fill='currentColor' transform='rotate(90.000000, 64.000000, 336.000000)'></polygon>
-<polygon points='80.000000,144.000000 68.000000,138.399994 68.000000,149.600006' fill='currentColor' transform='rotate(180.000000, 72.000000, 144.000000)'></polygon>
-<text text-anchor='middle' x='0' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='0' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='244' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='8' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='16' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='24' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='100' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='32' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='196' fill='currentColor' style='font-size:1em'>a</text>
-<text text-anchor='middle' x='32' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='32' y='276' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='32' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='100' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='40' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='196' fill='currentColor' style='font-size:1em'>m</text>
-<text text-anchor='middle' x='40' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='40' y='276' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='40' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='20' fill='currentColor' style='font-size:1em'>L</text>
-<text text-anchor='middle' x='48' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='100' fill='currentColor' style='font-size:1em'>m</text>
-<text text-anchor='middle' x='48' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='196' fill='currentColor' style='font-size:1em'>o</text>
-<text text-anchor='middle' x='48' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='48' y='276' fill='currentColor' style='font-size:1em'>m</text>
-<text text-anchor='middle' x='48' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='20' fill='currentColor' style='font-size:1em'>O</text>
-<text text-anchor='middle' x='56' y='68' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='100' fill='currentColor' style='font-size:1em'>p</text>
-<text text-anchor='middle' x='56' y='148' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='164' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='196' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='56' y='228' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='276' fill='currentColor' style='font-size:1em'>p</text>
-<text text-anchor='middle' x='56' y='324' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='56' y='372' fill='currentColor' style='font-size:1em'>R</text>
-<text text-anchor='middle' x='64' y='20' fill='currentColor' style='font-size:1em'>C</text>
-<text text-anchor='middle' x='64' y='196' fill='currentColor' style='font-size:1em'>w</text>
-<text text-anchor='middle' x='64' y='372' fill='currentColor' style='font-size:1em'>E</text>
-<text text-anchor='middle' x='72' y='20' fill='currentColor' style='font-size:1em'>K</text>
-<text text-anchor='middle' x='72' y='100' fill='currentColor' style='font-size:1em'>=</text>
-<text text-anchor='middle' x='72' y='196' fill='currentColor' style='font-size:1em'>a</text>
-<text text-anchor='middle' x='72' y='276' fill='currentColor' style='font-size:1em'>=</text>
-<text text-anchor='middle' x='72' y='372' fill='currentColor' style='font-size:1em'>T</text>
-<text text-anchor='middle' x='80' y='196' fill='currentColor' style='font-size:1em'>p</text>
-<text text-anchor='middle' x='80' y='324' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='88' y='100' fill='currentColor' style='font-size:1em'>1</text>
-<text text-anchor='middle' x='88' y='276' fill='currentColor' style='font-size:1em'>0</text>
-<text text-anchor='middle' x='88' y='324' fill='currentColor' style='font-size:1em'>r</text>
-<text text-anchor='middle' x='96' y='196' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='96' y='324' fill='currentColor' style='font-size:1em'>u</text>
-<text text-anchor='middle' x='104' y='196' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='104' y='324' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='112' y='196' fill='currentColor' style='font-size:1em'>m</text>
-<text text-anchor='middle' x='120' y='196' fill='currentColor' style='font-size:1em'>p</text>
-<text text-anchor='middle' x='128' y='196' fill='currentColor' style='font-size:1em'>,</text>
-<text text-anchor='middle' x='128' y='260' fill='currentColor' style='font-size:1em'>f</text>
-<text text-anchor='middle' x='136' y='260' fill='currentColor' style='font-size:1em'>a</text>
-<text text-anchor='middle' x='144' y='196' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='144' y='260' fill='currentColor' style='font-size:1em'>l</text>
-<text text-anchor='middle' x='152' y='196' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='152' y='260' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='160' y='196' fill='currentColor' style='font-size:1em'>m</text>
-<text text-anchor='middle' x='160' y='260' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='168' y='196' fill='currentColor' style='font-size:1em'>p</text>
-<text text-anchor='middle' x='176' y='196' fill='currentColor' style='font-size:1em'>,</text>
-<text text-anchor='middle' x='192' y='196' fill='currentColor' style='font-size:1em'>s</text>
-<text text-anchor='middle' x='200' y='196' fill='currentColor' style='font-size:1em'>e</text>
-<text text-anchor='middle' x='208' y='196' fill='currentColor' style='font-size:1em'>c</text>
-<text text-anchor='middle' x='216' y='196' fill='currentColor' style='font-size:1em'>t</text>
-<text text-anchor='middle' x='224' y='196' fill='currentColor' style='font-size:1em'>i</text>
-<text text-anchor='middle' x='232' y='196' fill='currentColor' style='font-size:1em'>o</text>
-<text text-anchor='middle' x='240' y='196' fill='currentColor' style='font-size:1em'>n</text>
-<text text-anchor='middle' x='304' y='180' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='312' y='180' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='320' y='180' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='328' y='180' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='336' y='180' fill='currentColor' style='font-size:1em'>	</text>
-<text text-anchor='middle' x='344' y='180' fill='currentColor' style='font-size:1em'>	</text>
-</g>
-
-    </svg>
-  
-</div>
-<p>which when implemented gives us the following assembly code</p>
-<pre tabindex="0"><code class="language-riscvasm" data-lang="riscvasm">lock:							#a0 - int* section
+</code></pre><table><thead><tr><th>TIME</th><th>THREAD 1 (ON CORE 1)</th><th>THREAD 2 (ON CORE 2)</th></tr></thead><tbody><tr><td>1.</td><td>ld a0, head [head=0x1000]</td><td>?</td></tr><tr><td>2.</td><td>ld a1, 0(a0) [head->next=0x2000]</td><td>ld a0, head [head=0x1000]</td></tr><tr><td>3.</td><td>/</td><td>ld a1, 0(a0) [head->next=0x2000]</td></tr><tr><td>4.</td><td>sd a1, head [head=0x2000]</td><td>/</td></tr><tr><td>5.</td><td>ret [return a0=0x1000]</td><td>sd a1, head [head=0x2000]</td></tr><tr><td>6.</td><td>?</td><td>ret [return a0=0x1000]</td></tr></tbody></table><p>If we look closely at the return value, we realize that both threads have allocated the same block, which is not correct behavior because now both threads are sharing a block that they believe to have exclusive access to. Mistakes like this inside the kernel can cause catastrophic failures of user code and the operating system, depending on what the allocated memory is used for.</p><p>The issue in this code arises from the fact that changing the head of the list is not an atomic operation, leading to THREAD 2 being able to read the old head value before THREAD 1 gets to update it by storing the new value.</p><p>To find a solution to this problem, we will think about the correct behavior. The correct behavior is that once either of the threads starts the operation by executing <code>void* block = (void*) head;</code> no other threads can start executing the operation until the thread that started the operation finishes executing <code>head = head->next;</code>. This way it is impossible for threads to read the old value of <code>head</code>.</p><p>So, for the code to behave correctly, it needs to <em>lock</em> the <em>section</em> before starting the operation, and it needs to <em>unlock</em> the <em>section</em> when it finishes the operation so that other threads can start their operations.</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#66d9ef>struct</span>  free_block {
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>struct</span> free_block<span style=color:#f92672>*</span> next
+</span></span><span style=display:flex><span>	<span style=color:#75715e>//...
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>}
+</span></span><span style=display:flex><span><span style=color:#66d9ef>int</span> section;
+</span></span><span style=display:flex><span><span style=color:#66d9ef>struct</span> free_block<span style=color:#f92672>*</span> <span style=color:#66d9ef>volatile</span> head; 
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>void</span><span style=color:#f92672>*</span> <span style=color:#a6e22e>alloc_block</span>()
+</span></span><span style=display:flex><span>{
+</span></span><span style=display:flex><span>	<span style=color:#a6e22e>lock</span>(<span style=color:#f92672>&amp;</span>section);
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>void</span><span style=color:#f92672>*</span> block <span style=color:#f92672>=</span> (<span style=color:#66d9ef>void</span><span style=color:#f92672>*</span>) head;
+</span></span><span style=display:flex><span>	head <span style=color:#f92672>=</span> head<span style=color:#f92672>-&gt;</span>next;
+</span></span><span style=display:flex><span>	<span style=color:#a6e22e>unlock</span>(<span style=color:#f92672>&amp;</span>section);
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>return</span> block;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>We now need to implement <code>lock</code> and <code>unlock</code> .</p><h2 id=void-lockint-section><code>void lock(int* section);</code><a href=#void-lockint-section class=hanchor arialabel=Anchor>&#8983;</a></h2><div class="goat svg-container"><svg font-family="Menlo,Lucida Console,monospace" viewBox="0 0 472 329"><g transform="translate(8,16)"><path d="M16 0h96" fill="none" stroke="currentcolor"/><path d="M16 32H64" fill="none" stroke="currentcolor"/><path d="M64 32h48" fill="none" stroke="currentcolor"/><path d="M72 48H176" fill="none" stroke="currentcolor"/><path d="M216 48h24" fill="none" stroke="currentcolor"/><path d="M120 96h56" fill="none" stroke="currentcolor"/><path d="M240 128h24" fill="none" stroke="currentcolor"/><path d="M8 176H120" fill="none" stroke="currentcolor"/><path d="M8 208H120" fill="none" stroke="currentcolor"/><path d="M216 224h24" fill="none" stroke="currentcolor"/><path d="M8 272H120" fill="none" stroke="currentcolor"/><path d="M8 304H120" fill="none" stroke="currentcolor"/><path d="M20 72H64" fill="none" stroke="currentcolor"/><path d="M64 72h44" fill="none" stroke="currentcolor"/><path d="M20 120h88" fill="none" stroke="currentcolor"/><path d="M8 176v32" fill="none" stroke="currentcolor"/><path d="M8 272v32" fill="none" stroke="currentcolor"/><path d="M16 0V32" fill="none" stroke="currentcolor"/><path d="M64 32V64" fill="none" stroke="currentcolor"/><path d="M64 128v32" fill="none" stroke="currentcolor"/><path d="M64 224v32" fill="none" stroke="currentcolor"/><path d="M112 0V32" fill="none" stroke="currentcolor"/><path d="M120 176v32" fill="none" stroke="currentcolor"/><path d="M120 272v32" fill="none" stroke="currentcolor"/><path d="M176 48V96" fill="none" stroke="currentcolor"/><path d="M240 48v80" fill="none" stroke="currentcolor"/><path d="M240 128v96" fill="none" stroke="currentcolor"/><path d="M8 96 20 72" fill="none" stroke="currentcolor"/><path d="M108 120l12-24" fill="none" stroke="currentcolor"/><path d="M8 96l12 24" fill="none" stroke="currentcolor"/><path d="M108 72l12 24" fill="none" stroke="currentcolor"/><path d="M64 120v8" fill="none" stroke="currentcolor"/><path d="M64 216v8" fill="none" stroke="currentcolor"/><polygon points="72.000000,64.000000 60.000000,58.400002 60.000000,69.599998" fill="currentcolor" transform="rotate(90.000000, 64.000000, 64.000000)"/><path d="M64 160v8" fill="none" stroke="currentcolor"/><polygon points="80.000000,160.000000 68.000000,154.399994 68.000000,165.600006" fill="currentcolor" transform="rotate(90.000000, 64.000000, 160.000000)"/><path d="M64 256v8" fill="none" stroke="currentcolor"/><polygon points="80.000000,256.000000 68.000000,250.399994 68.000000,261.600006" fill="currentcolor" transform="rotate(90.000000, 64.000000, 256.000000)"/><polygon points="80.000000,48.000000 68.000000,42.400002 68.000000,53.599998" fill="currentcolor" transform="rotate(180.000000, 72.000000, 48.000000)"/><polygon points="272.000000,128.000000 260.000000,122.400002 260.000000,133.600006" fill="currentcolor" transform="rotate(0.000000, 264.000000, 128.000000)"/><text text-anchor="middle" x="0" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="100" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="24" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="196" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="24" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="100" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="32" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="196" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="32" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="100" fill="currentcolor" style="font-size:1em">c</text><text text-anchor="middle" x="40" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="196" fill="currentcolor" style="font-size:1em">c</text><text text-anchor="middle" x="40" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="20" fill="currentcolor" style="font-size:1em">L</text><text text-anchor="middle" x="48" y="100" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="48" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="196" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="48" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="20" fill="currentcolor" style="font-size:1em">O</text><text text-anchor="middle" x="56" y="100" fill="currentcolor" style="font-size:1em">i</text><text text-anchor="middle" x="56" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="196" fill="currentcolor" style="font-size:1em">i</text><text text-anchor="middle" x="56" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="292" fill="currentcolor" style="font-size:1em">R</text><text text-anchor="middle" x="64" y="20" fill="currentcolor" style="font-size:1em">C</text><text text-anchor="middle" x="64" y="100" fill="currentcolor" style="font-size:1em">o</text><text text-anchor="middle" x="64" y="196" fill="currentcolor" style="font-size:1em">o</text><text text-anchor="middle" x="64" y="292" fill="currentcolor" style="font-size:1em">E</text><text text-anchor="middle" x="72" y="20" fill="currentcolor" style="font-size:1em">K</text><text text-anchor="middle" x="72" y="100" fill="currentcolor" style="font-size:1em">n</text><text text-anchor="middle" x="72" y="196" fill="currentcolor" style="font-size:1em">n</text><text text-anchor="middle" x="72" y="292" fill="currentcolor" style="font-size:1em">T</text><text text-anchor="middle" x="80" y="148" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="80" y="244" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="88" y="100" fill="currentcolor" style="font-size:1em">=</text><text text-anchor="middle" x="88" y="148" fill="currentcolor" style="font-size:1em">r</text><text text-anchor="middle" x="88" y="196" fill="currentcolor" style="font-size:1em">=</text><text text-anchor="middle" x="88" y="244" fill="currentcolor" style="font-size:1em">r</text><text text-anchor="middle" x="96" y="148" fill="currentcolor" style="font-size:1em">u</text><text text-anchor="middle" x="96" y="244" fill="currentcolor" style="font-size:1em">u</text><text text-anchor="middle" x="104" y="100" fill="currentcolor" style="font-size:1em">0</text><text text-anchor="middle" x="104" y="148" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="104" y="196" fill="currentcolor" style="font-size:1em">1</text><text text-anchor="middle" x="104" y="244" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="128" y="84" fill="currentcolor" style="font-size:1em">f</text><text text-anchor="middle" x="136" y="84" fill="currentcolor" style="font-size:1em">a</text><text text-anchor="middle" x="144" y="84" fill="currentcolor" style="font-size:1em">l</text><text text-anchor="middle" x="152" y="84" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="160" y="84" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="280" y="132" fill="currentcolor" style="font-size:1em">M</text><text text-anchor="middle" x="288" y="132" fill="currentcolor" style="font-size:1em">u</text><text text-anchor="middle" x="296" y="132" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="304" y="132" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="320" y="132" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="328" y="132" fill="currentcolor" style="font-size:1em">x</text><text text-anchor="middle" x="336" y="132" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="344" y="132" fill="currentcolor" style="font-size:1em">c</text><text text-anchor="middle" x="352" y="132" fill="currentcolor" style="font-size:1em">u</text><text text-anchor="middle" x="360" y="132" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="368" y="132" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="384" y="132" fill="currentcolor" style="font-size:1em">a</text><text text-anchor="middle" x="392" y="132" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="400" y="132" fill="currentcolor" style="font-size:1em">o</text><text text-anchor="middle" x="408" y="132" fill="currentcolor" style="font-size:1em">m</text><text text-anchor="middle" x="416" y="132" fill="currentcolor" style="font-size:1em">i</text><text text-anchor="middle" x="424" y="132" fill="currentcolor" style="font-size:1em">c</text><text text-anchor="middle" x="432" y="132" fill="currentcolor" style="font-size:1em">a</text><text text-anchor="middle" x="440" y="132" fill="currentcolor" style="font-size:1em">l</text><text text-anchor="middle" x="448" y="132" fill="currentcolor" style="font-size:1em">l</text><text text-anchor="middle" x="456" y="132" fill="currentcolor" style="font-size:1em">y</text></g></svg></div><h2 id=void-unlockint-section><code>void unlock(int* section);</code><a href=#void-unlockint-section class=hanchor arialabel=Anchor>&#8983;</a></h2><div class="goat svg-container"><svg font-family="Menlo,Lucida Console,monospace" viewBox="0 0 480 249"><g transform="translate(8,16)"><path d="M16 0h96" fill="none" stroke="currentcolor"/><path d="M16 32H64" fill="none" stroke="currentcolor"/><path d="M64 32h48" fill="none" stroke="currentcolor"/><path d="M8 96H120" fill="none" stroke="currentcolor"/><path d="M8 128H120" fill="none" stroke="currentcolor"/><path d="M8 192H120" fill="none" stroke="currentcolor"/><path d="M8 224H120" fill="none" stroke="currentcolor"/><path d="M8 96v32" fill="none" stroke="currentcolor"/><path d="M8 192v32" fill="none" stroke="currentcolor"/><path d="M16 0V32" fill="none" stroke="currentcolor"/><path d="M64 32V80" fill="none" stroke="currentcolor"/><path d="M64 144v32" fill="none" stroke="currentcolor"/><path d="M112 0V32" fill="none" stroke="currentcolor"/><path d="M120 96v32" fill="none" stroke="currentcolor"/><path d="M120 192v32" fill="none" stroke="currentcolor"/><path d="M64 136v8" fill="none" stroke="currentcolor"/><path d="M64 80v8" fill="none" stroke="currentcolor"/><polygon points="80.000000,80.000000 68.000000,74.400002 68.000000,85.599998" fill="currentcolor" transform="rotate(90.000000, 64.000000, 80.000000)"/><path d="M64 176v8" fill="none" stroke="currentcolor"/><polygon points="80.000000,176.000000 68.000000,170.399994 68.000000,181.600006" fill="currentcolor" transform="rotate(90.000000, 64.000000, 176.000000)"/><text text-anchor="middle" x="0" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="116" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="24" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="116" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="32" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="20" fill="currentcolor" style="font-size:1em">U</text><text text-anchor="middle" x="40" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="116" fill="currentcolor" style="font-size:1em">c</text><text text-anchor="middle" x="40" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="20" fill="currentcolor" style="font-size:1em">N</text><text text-anchor="middle" x="48" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="116" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="48" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="20" fill="currentcolor" style="font-size:1em">L</text><text text-anchor="middle" x="56" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="116" fill="currentcolor" style="font-size:1em">i</text><text text-anchor="middle" x="56" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="212" fill="currentcolor" style="font-size:1em">R</text><text text-anchor="middle" x="64" y="20" fill="currentcolor" style="font-size:1em">O</text><text text-anchor="middle" x="64" y="116" fill="currentcolor" style="font-size:1em">o</text><text text-anchor="middle" x="64" y="212" fill="currentcolor" style="font-size:1em">E</text><text text-anchor="middle" x="72" y="20" fill="currentcolor" style="font-size:1em">C</text><text text-anchor="middle" x="72" y="116" fill="currentcolor" style="font-size:1em">n</text><text text-anchor="middle" x="72" y="212" fill="currentcolor" style="font-size:1em">T</text><text text-anchor="middle" x="80" y="20" fill="currentcolor" style="font-size:1em">K</text><text text-anchor="middle" x="80" y="68" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="88" y="68" fill="currentcolor" style="font-size:1em">r</text><text text-anchor="middle" x="88" y="116" fill="currentcolor" style="font-size:1em">=</text><text text-anchor="middle" x="96" y="68" fill="currentcolor" style="font-size:1em">u</text><text text-anchor="middle" x="104" y="68" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="104" y="116" fill="currentcolor" style="font-size:1em">0</text></g></svg></div><p>However for implementing <code>lock</code> we must avoid any implementations that compile to LOAD -> BRANCH -> STORE because writing the <code>lock</code> function like that will make it susceptible to the same problem we had in <code>alloc_block</code>. To implement this behavior correctly we turn to atomic instructions.</p><h2 id=amoswap-rd-rs2-rs1><code>amoswap rd, rs2, (rs1)</code><a href=#amoswap-rd-rs2-rs1 class=hanchor arialabel=Anchor>&#8983;</a></h2><p><code>amoswap</code> is an instruction from the A extension which allows us to swap the data from <code>rs2 => (rs1) => rd</code> as a single atomic operation. Using this instruction we can implement <code>lock</code> like so:</p><div class="goat svg-container"><svg font-family="Menlo,Lucida Console,monospace" viewBox="0 0 360 409"><g transform="translate(8,16)"><path d="M16 0h96" fill="none" stroke="currentcolor"/><path d="M16 32H64" fill="none" stroke="currentcolor"/><path d="M64 32h48" fill="none" stroke="currentcolor"/><path d="M16 80h96" fill="none" stroke="currentcolor"/><path d="M16 112h96" fill="none" stroke="currentcolor"/><path d="M72 144H296" fill="none" stroke="currentcolor"/><path d="M16 176H256" fill="none" stroke="currentcolor"/><path d="M16 208H64" fill="none" stroke="currentcolor"/><path d="M64 208H256" fill="none" stroke="currentcolor"/><path d="M120 272H296" fill="none" stroke="currentcolor"/><path d="M8 352H120" fill="none" stroke="currentcolor"/><path d="M8 384H120" fill="none" stroke="currentcolor"/><path d="M20 248H64" fill="none" stroke="currentcolor"/><path d="M64 248h44" fill="none" stroke="currentcolor"/><path d="M20 296h88" fill="none" stroke="currentcolor"/><path d="M8 352v32" fill="none" stroke="currentcolor"/><path d="M16 0V32" fill="none" stroke="currentcolor"/><path d="M16 80v32" fill="none" stroke="currentcolor"/><path d="M16 176v32" fill="none" stroke="currentcolor"/><path d="M64 32V64" fill="none" stroke="currentcolor"/><path d="M64 128v32" fill="none" stroke="currentcolor"/><path d="M64 208v32" fill="none" stroke="currentcolor"/><path d="M64 304v32" fill="none" stroke="currentcolor"/><path d="M112 0V32" fill="none" stroke="currentcolor"/><path d="M112 80v32" fill="none" stroke="currentcolor"/><path d="M120 352v32" fill="none" stroke="currentcolor"/><path d="M256 176v32" fill="none" stroke="currentcolor"/><path d="M296 144V272" fill="none" stroke="currentcolor"/><path d="M8 272l12-24" fill="none" stroke="currentcolor"/><path d="M108 296l12-24" fill="none" stroke="currentcolor"/><path d="M8 272l12 24" fill="none" stroke="currentcolor"/><path d="M108 248l12 24" fill="none" stroke="currentcolor"/><path d="M64 120v8" fill="none" stroke="currentcolor"/><path d="M64 296v8" fill="none" stroke="currentcolor"/><path d="M64 64v8" fill="none" stroke="currentcolor"/><polygon points="80.000000,64.000000 68.000000,58.400002 68.000000,69.599998" fill="currentcolor" transform="rotate(90.000000, 64.000000, 64.000000)"/><path d="M64 160v8" fill="none" stroke="currentcolor"/><polygon points="80.000000,160.000000 68.000000,154.399994 68.000000,165.600006" fill="currentcolor" transform="rotate(90.000000, 64.000000, 160.000000)"/><polygon points="72.000000,240.000000 60.000000,234.399994 60.000000,245.600006" fill="currentcolor" transform="rotate(90.000000, 64.000000, 240.000000)"/><path d="M64 336v8" fill="none" stroke="currentcolor"/><polygon points="80.000000,336.000000 68.000000,330.399994 68.000000,341.600006" fill="currentcolor" transform="rotate(90.000000, 64.000000, 336.000000)"/><polygon points="80.000000,144.000000 68.000000,138.399994 68.000000,149.600006" fill="currentcolor" transform="rotate(180.000000, 72.000000, 144.000000)"/><text text-anchor="middle" x="0" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="0" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="244" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="8" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="16" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="24" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="100" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="32" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="196" fill="currentcolor" style="font-size:1em">a</text><text text-anchor="middle" x="32" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="32" y="276" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="32" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="100" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="40" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="196" fill="currentcolor" style="font-size:1em">m</text><text text-anchor="middle" x="40" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="40" y="276" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="40" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="20" fill="currentcolor" style="font-size:1em">L</text><text text-anchor="middle" x="48" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="100" fill="currentcolor" style="font-size:1em">m</text><text text-anchor="middle" x="48" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="196" fill="currentcolor" style="font-size:1em">o</text><text text-anchor="middle" x="48" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="48" y="276" fill="currentcolor" style="font-size:1em">m</text><text text-anchor="middle" x="48" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="20" fill="currentcolor" style="font-size:1em">O</text><text text-anchor="middle" x="56" y="68" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="100" fill="currentcolor" style="font-size:1em">p</text><text text-anchor="middle" x="56" y="148" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="164" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="196" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="56" y="228" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="276" fill="currentcolor" style="font-size:1em">p</text><text text-anchor="middle" x="56" y="324" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="56" y="372" fill="currentcolor" style="font-size:1em">R</text><text text-anchor="middle" x="64" y="20" fill="currentcolor" style="font-size:1em">C</text><text text-anchor="middle" x="64" y="196" fill="currentcolor" style="font-size:1em">w</text><text text-anchor="middle" x="64" y="372" fill="currentcolor" style="font-size:1em">E</text><text text-anchor="middle" x="72" y="20" fill="currentcolor" style="font-size:1em">K</text><text text-anchor="middle" x="72" y="100" fill="currentcolor" style="font-size:1em">=</text><text text-anchor="middle" x="72" y="196" fill="currentcolor" style="font-size:1em">a</text><text text-anchor="middle" x="72" y="276" fill="currentcolor" style="font-size:1em">=</text><text text-anchor="middle" x="72" y="372" fill="currentcolor" style="font-size:1em">T</text><text text-anchor="middle" x="80" y="196" fill="currentcolor" style="font-size:1em">p</text><text text-anchor="middle" x="80" y="324" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="88" y="100" fill="currentcolor" style="font-size:1em">1</text><text text-anchor="middle" x="88" y="276" fill="currentcolor" style="font-size:1em">0</text><text text-anchor="middle" x="88" y="324" fill="currentcolor" style="font-size:1em">r</text><text text-anchor="middle" x="96" y="196" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="96" y="324" fill="currentcolor" style="font-size:1em">u</text><text text-anchor="middle" x="104" y="196" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="104" y="324" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="112" y="196" fill="currentcolor" style="font-size:1em">m</text><text text-anchor="middle" x="120" y="196" fill="currentcolor" style="font-size:1em">p</text><text text-anchor="middle" x="128" y="196" fill="currentcolor" style="font-size:1em">,</text><text text-anchor="middle" x="128" y="260" fill="currentcolor" style="font-size:1em">f</text><text text-anchor="middle" x="136" y="260" fill="currentcolor" style="font-size:1em">a</text><text text-anchor="middle" x="144" y="196" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="144" y="260" fill="currentcolor" style="font-size:1em">l</text><text text-anchor="middle" x="152" y="196" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="152" y="260" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="160" y="196" fill="currentcolor" style="font-size:1em">m</text><text text-anchor="middle" x="160" y="260" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="168" y="196" fill="currentcolor" style="font-size:1em">p</text><text text-anchor="middle" x="176" y="196" fill="currentcolor" style="font-size:1em">,</text><text text-anchor="middle" x="192" y="196" fill="currentcolor" style="font-size:1em">s</text><text text-anchor="middle" x="200" y="196" fill="currentcolor" style="font-size:1em">e</text><text text-anchor="middle" x="208" y="196" fill="currentcolor" style="font-size:1em">c</text><text text-anchor="middle" x="216" y="196" fill="currentcolor" style="font-size:1em">t</text><text text-anchor="middle" x="224" y="196" fill="currentcolor" style="font-size:1em">i</text><text text-anchor="middle" x="232" y="196" fill="currentcolor" style="font-size:1em">o</text><text text-anchor="middle" x="240" y="196" fill="currentcolor" style="font-size:1em">n</text><text text-anchor="middle" x="304" y="180" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="312" y="180" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="320" y="180" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="328" y="180" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="336" y="180" fill="currentcolor" style="font-size:1em"/><text text-anchor="middle" x="344" y="180" fill="currentcolor" style="font-size:1em"/></g></svg></div><p>which when implemented gives us the following assembly code</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>lock:							#a0 - int* section
 	addi t0, zero, 1 			#load 1 into t0
 	amoswap.w.aq t0, t0, (a0)	#swap t0 =&gt; (section) =&gt; t0
 	bnez t0, lock				#if t0 is not 0, try again
@@ -642,86 +46,29 @@ unlock
 	amoswap.w.rl zero, zero, (a0)
 	ret
 </code></pre><p>The <code>.w</code> in the instruction signifies that the swap is performed on a 32bit value (a Word).
-There is also <code>.d</code> that means that the swap is being performed on a 64b value (a Double word)</p>
-<p>The second thing we can se is the <code>aq</code> and <code>rl</code> flags. The <code>aq</code> stands for &ldquo;acquire constraint&rdquo; and <code>rq</code> stands for &ldquo;release constraint&rdquo;</p>
-<h2 id="memory-ordering-constraints">Memory ordering constraints<a href="#memory-ordering-constraints" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
-<p>To understand what is being acomplished with the acquire and release constraints, we need to talk about the RISC-V memory model. RISC-V ISA specifies a relaxed memory model. This allows CPU architects to implement processors that execute instructions that access memory out of order. This increases performance, but leads to problems when making software.</p>
-<p>Let&rsquo;s now assume that memory accesses can be reordered. Consider now these two lines of code:</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span>		<span style="color:#75715e">//&lt;- Other thread: head = head-&gt;next;
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>		<span style="color:#75715e">//&lt;- Other thread: unlock(&amp;section);
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#a6e22e">lock</span>(<span style="color:#f92672">&amp;</span>section);
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">void</span><span style="color:#f92672">*</span> block <span style="color:#f92672">=</span> (<span style="color:#66d9ef">void</span><span style="color:#f92672">*</span>) head;
-</span></span></code></pre></div><p>The <code>lock</code> function executes the <code>amoswap</code> we need to get exclusive access, and then we load value of <code>head</code> into block. This seems correct, however when we take into consideration the fact that the CPU can execute instructions out of order, a possibility arises that the CPU will reorder the code to look something like:</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span><span style="color:#66d9ef">void</span><span style="color:#f92672">*</span> block <span style="color:#f92672">=</span> (<span style="color:#66d9ef">void</span><span style="color:#f92672">*</span>) head;
-</span></span><span style="display:flex;"><span>		<span style="color:#75715e">//&lt;- Other thread: head = head-&gt;next;
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>		<span style="color:#75715e">//&lt;- Other thread: unlock(&amp;section);
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#a6e22e">lock</span>(<span style="color:#f92672">&amp;</span>section);
-</span></span></code></pre></div><p>This is now incorrect since the CPU loaded the <code>head</code> of the list before locking the section, and possibly read a wrong value. This sort of reordering renders our lock function useless. To fix this problem the standard defines acquire and release constraints for all atomic instructions. If we attach an acquire constraint using <code>.aq</code>, the CPU must not reorder any memory operations after the <code>amoswap.w.aq</code> to execute before it, preventing the situation above.</p>
-<p>A simillar situation can arise if we consider:</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span>head <span style="color:#f92672">=</span> head<span style="color:#f92672">-&gt;</span>next;
-</span></span><span style="display:flex;"><span><span style="color:#a6e22e">unlock</span>(<span style="color:#f92672">&amp;</span>section);
-</span></span><span style="display:flex;"><span>		<span style="color:#75715e">//&lt;-- Other thread: lock(&amp;section);
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>		<span style="color:#75715e">//&lt;-- Other thread: void* block = (void*) head;
-</span></span></span></code></pre></div><p>getting reordered by the CPU to execute like:</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span><span style="color:#a6e22e">unlock</span>(<span style="color:#f92672">&amp;</span>section);
-</span></span><span style="display:flex;"><span>		<span style="color:#75715e">//&lt;-- Other thread: lock(&amp;section);
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>		<span style="color:#75715e">//&lt;-- Other thread: void* block = (void*) head;
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>head <span style="color:#f92672">=</span> head<span style="color:#f92672">-&gt;</span>next;
-</span></span></code></pre></div><p>Which could cause another thread to read the wrong value by storing the new <code>head</code> too late. This problem is fixed by attaching a release constraint using <code>.rl</code>, which prevents the CPU from reordering any memory operations before <code>amoswap.w.rl</code> to execute after it. This prevents the store getting reordered past <code>unlock</code>.</p>
-<h2 id="beware-of-interrupts">Beware of interrupts<a href="#beware-of-interrupts" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
-<p>Let&rsquo;s now consider that we might need to allocate memory inside of the interrupt routine. Let&rsquo;s say the interrupt handler looks like:</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">interrupt</span>() {
-</span></span><span style="display:flex;"><span>	<span style="color:#75715e">// ...
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	<span style="color:#a6e22e">alloc_block</span>();
-</span></span><span style="display:flex;"><span>	<span style="color:#75715e">// ...
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	<span style="color:#66d9ef">return</span>;
-</span></span><span style="display:flex;"><span>}
-</span></span></code></pre></div><p>We just introduced a bug, because the following can happen:</p>
-<table>
-<thead>
-<tr>
-<th>TIME</th>
-<th>THREAD 1 (ON CORE 1)</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1.</td>
-<td>alloc_block()</td>
-</tr>
-<tr>
-<td>2.</td>
-<td>-&gt; lock(&amp;section); // locks the section</td>
-</tr>
-<tr>
-<td>3.</td>
-<td>-&gt; void* block = (void*) head;</td>
-</tr>
-<tr>
-<td>4.</td>
-<td>-&gt; //INTERRUPT TAKEN</td>
-</tr>
-<tr>
-<td>5.</td>
-<td>-&gt; interrupt();</td>
-</tr>
-<tr>
-<td>6.</td>
-<td>-&gt; -&gt; //&hellip;</td>
-</tr>
-<tr>
-<td>7.</td>
-<td>-&gt; -&gt; alloc_block();</td>
-</tr>
-<tr>
-<td>8.</td>
-<td>-&gt; -&gt; -&gt; lock(&amp;section); // &lt;- infinite wait</td>
-</tr>
-</tbody>
-</table>
-<p>The second call for lock will wait indefinetely, beacuse in the interrupt handler we are waiting for the lock to be unlocked, but it can&rsquo;t get unlocked before the interrupt handler is finished. This situation is called a <em>livelock</em>, because CPU will be executing what is effectively a while loop, forever.</p>
-<p>Now let&rsquo;s fix this code. The obvious solution is to disable interrupts inside of the <code>lock</code> function and enable them inside of the <code>unlock</code> function. We will here assume that the kernel is running inside of Supervisor mode, and use the <code>SIE</code> (Supervisor Interrupt Enable) bit of the <code>sstatus</code> register to enable/disable interrupts.</p>
-<pre tabindex="0"><code class="language-riscvasm" data-lang="riscvasm">lock:							#a0 - int* section
+There is also <code>.d</code> that means that the swap is being performed on a 64b value (a Double word)</p><p>The second thing we can se is the <code>aq</code> and <code>rl</code> flags. The <code>aq</code> stands for &ldquo;acquire constraint&rdquo; and <code>rq</code> stands for &ldquo;release constraint&rdquo;</p><h2 id=memory-ordering-constraints>Memory ordering constraints<a href=#memory-ordering-constraints class=hanchor arialabel=Anchor>&#8983;</a></h2><p>To understand what is being acomplished with the acquire and release constraints, we need to talk about the RISC-V memory model. RISC-V ISA specifies a relaxed memory model. This allows CPU architects to implement processors that execute instructions that access memory out of order. This increases performance, but leads to problems when making software.</p><p>Let&rsquo;s now assume that memory accesses can be reordered. Consider now these two lines of code:</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span>		<span style=color:#75715e>//&lt;- Other thread: head = head-&gt;next;
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>		<span style=color:#75715e>//&lt;- Other thread: unlock(&amp;section);
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span><span style=color:#a6e22e>lock</span>(<span style=color:#f92672>&amp;</span>section);
+</span></span><span style=display:flex><span><span style=color:#66d9ef>void</span><span style=color:#f92672>*</span> block <span style=color:#f92672>=</span> (<span style=color:#66d9ef>void</span><span style=color:#f92672>*</span>) head;
+</span></span></code></pre></div><p>The <code>lock</code> function executes the <code>amoswap</code> we need to get exclusive access, and then we load value of <code>head</code> into block. This seems correct, however when we take into consideration the fact that the CPU can execute instructions out of order, a possibility arises that the CPU will reorder the code to look something like:</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#66d9ef>void</span><span style=color:#f92672>*</span> block <span style=color:#f92672>=</span> (<span style=color:#66d9ef>void</span><span style=color:#f92672>*</span>) head;
+</span></span><span style=display:flex><span>		<span style=color:#75715e>//&lt;- Other thread: head = head-&gt;next;
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>		<span style=color:#75715e>//&lt;- Other thread: unlock(&amp;section);
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span><span style=color:#a6e22e>lock</span>(<span style=color:#f92672>&amp;</span>section);
+</span></span></code></pre></div><p>This is now incorrect since the CPU loaded the <code>head</code> of the list before locking the section, and possibly read a wrong value. This sort of reordering renders our lock function useless. To fix this problem the standard defines acquire and release constraints for all atomic instructions. If we attach an acquire constraint using <code>.aq</code>, the CPU must not reorder any memory operations after the <code>amoswap.w.aq</code> to execute before it, preventing the situation above.</p><p>A simillar situation can arise if we consider:</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span>head <span style=color:#f92672>=</span> head<span style=color:#f92672>-&gt;</span>next;
+</span></span><span style=display:flex><span><span style=color:#a6e22e>unlock</span>(<span style=color:#f92672>&amp;</span>section);
+</span></span><span style=display:flex><span>		<span style=color:#75715e>//&lt;-- Other thread: lock(&amp;section);
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>		<span style=color:#75715e>//&lt;-- Other thread: void* block = (void*) head;
+</span></span></span></code></pre></div><p>getting reordered by the CPU to execute like:</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#a6e22e>unlock</span>(<span style=color:#f92672>&amp;</span>section);
+</span></span><span style=display:flex><span>		<span style=color:#75715e>//&lt;-- Other thread: lock(&amp;section);
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>		<span style=color:#75715e>//&lt;-- Other thread: void* block = (void*) head;
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>head <span style=color:#f92672>=</span> head<span style=color:#f92672>-&gt;</span>next;
+</span></span></code></pre></div><p>Which could cause another thread to read the wrong value by storing the new <code>head</code> too late. This problem is fixed by attaching a release constraint using <code>.rl</code>, which prevents the CPU from reordering any memory operations before <code>amoswap.w.rl</code> to execute after it. This prevents the store getting reordered past <code>unlock</code>.</p><h2 id=beware-of-interrupts>Beware of interrupts<a href=#beware-of-interrupts class=hanchor arialabel=Anchor>&#8983;</a></h2><p>Let&rsquo;s now consider that we might need to allocate memory inside of the interrupt routine. Let&rsquo;s say the interrupt handler looks like:</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#66d9ef>void</span> <span style=color:#a6e22e>interrupt</span>() {
+</span></span><span style=display:flex><span>	<span style=color:#75715e>// ...
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>	<span style=color:#a6e22e>alloc_block</span>();
+</span></span><span style=display:flex><span>	<span style=color:#75715e>// ...
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>	<span style=color:#66d9ef>return</span>;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>We just introduced a bug, because the following can happen:</p><table><thead><tr><th>TIME</th><th>THREAD 1 (ON CORE 1)</th></tr></thead><tbody><tr><td>1.</td><td>alloc_block()</td></tr><tr><td>2.</td><td>-> lock(&amp;section); // locks the section</td></tr><tr><td>3.</td><td>-> void* block = (void*) head;</td></tr><tr><td>4.</td><td>-> //INTERRUPT TAKEN</td></tr><tr><td>5.</td><td>-> interrupt();</td></tr><tr><td>6.</td><td>-> -> //&mldr;</td></tr><tr><td>7.</td><td>-> -> alloc_block();</td></tr><tr><td>8.</td><td>-> -> -> lock(&amp;section); // &lt;- infinite wait</td></tr></tbody></table><p>The second call for lock will wait indefinetely, beacuse in the interrupt handler we are waiting for the lock to be unlocked, but it can&rsquo;t get unlocked before the interrupt handler is finished. This situation is called a <em>livelock</em>, because CPU will be executing what is effectively a while loop, forever.</p><p>Now let&rsquo;s fix this code. The obvious solution is to disable interrupts inside of the <code>lock</code> function and enable them inside of the <code>unlock</code> function. We will here assume that the kernel is running inside of Supervisor mode, and use the <code>SIE</code> (Supervisor Interrupt Enable) bit of the <code>sstatus</code> register to enable/disable interrupts.</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>lock:							#a0 - int* section
 	csrci sstatus, 2			#clear SIE - disable interrupts 
 lock_loop:
 	addi t0, zero, 1 			#load 1 into t0
@@ -733,132 +80,52 @@ unlock
 	amoswap.w.rl zero, zero, (a0)
 	csrsi sstatus, 2			#set SIE - enable interrupts
 	ret
-</code></pre><p>The logic behind this solution is that we can delay taking the interrupt if we are inside a locked section, leaving the interrupt to be taken after we unlock the section, fixing the issue.</p>
-<p>This solution, however, can still cause problems.
-The problem with this solution happens when we have nested critical sections. The problem is that after the <code>unlock</code> in the nested section, the interrupts will be turned ON which leads to the livelock demonstrated above.</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span><span style="color:#a6e22e">lock</span>(<span style="color:#f92672">&amp;</span>second_section);
-</span></span><span style="display:flex;"><span><span style="color:#75715e">//Interrupt are OFF here
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">void</span><span style="color:#f92672">*</span> block <span style="color:#f92672">=</span> <span style="color:#a6e22e">alloc_block</span>();
-</span></span><span style="display:flex;"><span><span style="color:#75715e">//Interrupts are ON here
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#a6e22e">unlock</span>(<span style="color:#f92672">&amp;</span>second_section)
-</span></span></code></pre></div><p>We will implement a fix for this solution, by counting how many times <code>lock</code> was called, and remembering if interrupts were ON when <code>lock</code> was initially called, and decreasing that number for every <code>unlock</code>. Once that counter decreases to 0, we will enable interrupts if they were initially ON. For the sake of simplicity, we will be writing this version in C.</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-c" data-lang="c"><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">typedef</span> <span style="color:#66d9ef">struct</span> {
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">int</span> depth
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">int</span> interrupts;
-</span></span><span style="display:flex;"><span>} <span style="color:#66d9ef">core_t</span>;
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">core_t</span> cores[CORE_COUNT];
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">lock</span>(<span style="color:#66d9ef">int</span><span style="color:#f92672">*</span> section)
-</span></span><span style="display:flex;"><span>{
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">int</span> interrupts <span style="color:#f92672">=</span> <span style="color:#a6e22e">intr_get</span>(); <span style="color:#75715e">// check if interrupts are on
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	<span style="color:#a6e22e">intr_off</span>(); <span style="color:#75715e">// turn off interrutps
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">int</span> id <span style="color:#f92672">=</span> <span style="color:#a6e22e">core_id</span>();
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">core_t</span><span style="color:#f92672">*</span> core <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>cores[id];
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#75715e">// save previous interrupt state for cpu on first lock
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	<span style="color:#66d9ef">if</span>(core<span style="color:#f92672">-&gt;</span>depth<span style="color:#f92672">++</span> <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span>)
-</span></span><span style="display:flex;"><span>		core<span style="color:#f92672">-&gt;</span>interrupts <span style="color:#f92672">=</span> interrupts;	
-</span></span><span style="display:flex;"><span>	
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">int</span> val <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">do</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">amoswap_acquire</span>(<span style="color:#f92672">&amp;</span>val, section);
-</span></span><span style="display:flex;"><span>	} <span style="color:#66d9ef">while</span>(val);
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">unlock</span>(<span style="color:#66d9ef">int</span><span style="color:#f92672">*</span> section)
-</span></span><span style="display:flex;"><span>{
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">int</span> id <span style="color:#f92672">=</span> <span style="color:#a6e22e">core_id</span>();
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">core_t</span><span style="color:#f92672">*</span> core <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>cores[id];
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">int</span> val <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">amoswap_release</span>(<span style="color:#f92672">&amp;</span>val, section);
-</span></span><span style="display:flex;"><span>	
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span>(<span style="color:#f92672">--</span>core<span style="color:#f92672">-&gt;</span>depth <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> <span style="color:#f92672">&amp;&amp;</span> core<span style="color:#f92672">-&gt;</span>interrupts)
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">intr_on</span>();
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>}
-</span></span></code></pre></div><p>The depth, and the interrupt state value is saved per CPU core, since all cores can be at different points of execution.</p>
-<h2 id="further-reading">Further reading<a href="#further-reading" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
-<ul>
-<li>
-<p><a href="https://blog.regehr.org/archives/2173">A closer look at a spinlock (x86, ARM)</a></p>
-</li>
-<li>
-<p><a href="https://en.cppreference.com/w/cpp/atomic">Atomic builtins in C++</a></p>
-</li>
-<li>
-<p><a href="https://five-embeddev.com/riscv-isa-manual/latest/a.html#sec:amo">Atomic memory operations in RISC-V</a></p>
-</li>
-<li>
-<p><a href="https://five-embeddev.com/riscv-isa-manual/latest/a.html#specifying-ordering-of-atomic-instructions">Ordering constraints for atomic instructions in RISC-V</a></p>
-</li>
-<li>
-<p><a href="https://github.com/mit-pdos/xv6-riscv/blob/riscv/kernel/spinlock.c">xv6 spinlock implementation</a></p>
-</li>
-</ul>
-
-      </div></div>
-
-  
-    
-<div class="pagination">
-    <div class="pagination__title">
-        <span class="pagination__title-h">Read other posts</span>
-        <hr />
-    </div>
-    <div class="pagination__buttons">
-        
-        <span class="button previous">
-            <a href="https://strajabot.com/posts/fast-scalar-strlen-riscv/">
-                <span class="button__icon">←</span>
-                <span class="button__text">RISC-V: Fast Scalar strlen() in Assembly</span>
-            </a>
-        </span>
-        
-        
-    </div>
-</div>
-
-  
-
-  
-    
-
-  
-</article>
-
-  </div>
-
-  
-    <footer class="footer">
-  <div class="footer__inner">
-    
-      <div class="copyright">
-        <span>© 2024 Powered by <a href="https://gohugo.io">Hugo</a></span>
-    
-      <span>:: <a href="https://github.com/panr/hugo-theme-terminal" target="_blank">Theme</a> made by <a href="https://github.com/panr" target="_blank">panr</a></span>
-      </div>
-  </div>
-</footer>
-
-
-
-
-
-
-<script type="text/javascript" src="/bundle.min.js"></script>
-
-
-
-
-
-  
-</div>
-
-</body>
-</html>
+</code></pre><p>The logic behind this solution is that we can delay taking the interrupt if we are inside a locked section, leaving the interrupt to be taken after we unlock the section, fixing the issue.</p><p>This solution, however, can still cause problems.
+The problem with this solution happens when we have nested critical sections. The problem is that after the <code>unlock</code> in the nested section, the interrupts will be turned ON which leads to the livelock demonstrated above.</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#a6e22e>lock</span>(<span style=color:#f92672>&amp;</span>second_section);
+</span></span><span style=display:flex><span><span style=color:#75715e>//Interrupt are OFF here
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span><span style=color:#66d9ef>void</span><span style=color:#f92672>*</span> block <span style=color:#f92672>=</span> <span style=color:#a6e22e>alloc_block</span>();
+</span></span><span style=display:flex><span><span style=color:#75715e>//Interrupts are ON here
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span><span style=color:#a6e22e>unlock</span>(<span style=color:#f92672>&amp;</span>second_section)
+</span></span></code></pre></div><p>We will implement a fix for this solution, by counting how many times <code>lock</code> was called, and remembering if interrupts were ON when <code>lock</code> was initially called, and decreasing that number for every <code>unlock</code>. Once that counter decreases to 0, we will enable interrupts if they were initially ON. For the sake of simplicity, we will be writing this version in C.</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>typedef</span> <span style=color:#66d9ef>struct</span> {
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>int</span> depth
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>int</span> interrupts;
+</span></span><span style=display:flex><span>} <span style=color:#66d9ef>core_t</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>core_t</span> cores[CORE_COUNT];
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>void</span> <span style=color:#a6e22e>lock</span>(<span style=color:#66d9ef>int</span><span style=color:#f92672>*</span> section)
+</span></span><span style=display:flex><span>{
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>int</span> interrupts <span style=color:#f92672>=</span> <span style=color:#a6e22e>intr_get</span>(); <span style=color:#75715e>// check if interrupts are on
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>	<span style=color:#a6e22e>intr_off</span>(); <span style=color:#75715e>// turn off interrutps
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>int</span> id <span style=color:#f92672>=</span> <span style=color:#a6e22e>core_id</span>();
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>core_t</span><span style=color:#f92672>*</span> core <span style=color:#f92672>=</span> <span style=color:#f92672>&amp;</span>cores[id];
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#75715e>// save previous interrupt state for cpu on first lock
+</span></span></span><span style=display:flex><span><span style=color:#75715e></span>	<span style=color:#66d9ef>if</span>(core<span style=color:#f92672>-&gt;</span>depth<span style=color:#f92672>++</span> <span style=color:#f92672>==</span> <span style=color:#ae81ff>0</span>)
+</span></span><span style=display:flex><span>		core<span style=color:#f92672>-&gt;</span>interrupts <span style=color:#f92672>=</span> interrupts;	
+</span></span><span style=display:flex><span>	
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>int</span> val <span style=color:#f92672>=</span> <span style=color:#ae81ff>1</span>;
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>do</span> {
+</span></span><span style=display:flex><span>		<span style=color:#a6e22e>amoswap_acquire</span>(<span style=color:#f92672>&amp;</span>val, section);
+</span></span><span style=display:flex><span>	} <span style=color:#66d9ef>while</span>(val);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>void</span> <span style=color:#a6e22e>unlock</span>(<span style=color:#66d9ef>int</span><span style=color:#f92672>*</span> section)
+</span></span><span style=display:flex><span>{
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>int</span> id <span style=color:#f92672>=</span> <span style=color:#a6e22e>core_id</span>();
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>core_t</span><span style=color:#f92672>*</span> core <span style=color:#f92672>=</span> <span style=color:#f92672>&amp;</span>cores[id];
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>int</span> val <span style=color:#f92672>=</span> <span style=color:#ae81ff>0</span>;
+</span></span><span style=display:flex><span>	<span style=color:#a6e22e>amoswap_release</span>(<span style=color:#f92672>&amp;</span>val, section);
+</span></span><span style=display:flex><span>	
+</span></span><span style=display:flex><span>	<span style=color:#66d9ef>if</span>(<span style=color:#f92672>--</span>core<span style=color:#f92672>-&gt;</span>depth <span style=color:#f92672>==</span> <span style=color:#ae81ff>0</span> <span style=color:#f92672>&amp;&amp;</span> core<span style=color:#f92672>-&gt;</span>interrupts)
+</span></span><span style=display:flex><span>		<span style=color:#a6e22e>intr_on</span>();
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>The depth, and the interrupt state value is saved per CPU core, since all cores can be at different points of execution.</p><h2 id=further-reading>Further reading<a href=#further-reading class=hanchor arialabel=Anchor>&#8983;</a></h2><ul><li><p><a href=https://blog.regehr.org/archives/2173>A closer look at a spinlock (x86, ARM)</a></p></li><li><p><a href=https://en.cppreference.com/w/cpp/atomic>Atomic builtins in C++</a></p></li><li><p><a href=https://five-embeddev.com/riscv-isa-manual/latest/a.html#sec:amo>Atomic memory operations in RISC-V</a></p></li><li><p><a href=https://five-embeddev.com/riscv-isa-manual/latest/a.html#specifying-ordering-of-atomic-instructions>Ordering constraints for atomic instructions in RISC-V</a></p></li><li><p><a href=https://github.com/mit-pdos/xv6-riscv/blob/riscv/kernel/spinlock.c>xv6 spinlock implementation</a></p></li></ul></div></div><div class=pagination><div class=pagination__title><span class=pagination__title-h>Read other posts</span><hr></div><div class=pagination__buttons><span class="button previous"><a href=https://strajabot.com/posts/fast-scalar-strlen-riscv/><span class=button__icon>←</span>
+<span class=button__text>RISC-V: Fast Scalar strlen() in Assembly</span></a></span></div></div></article></div><footer class=footer><div class=footer__inner><div class=copyright><span>© 2024 Powered by <a href=https://gohugo.io>Hugo</a></span>
+<span>:: <a href=https://github.com/panr/hugo-theme-terminal target=_blank>Theme</a> made by <a href=https://github.com/panr target=_blank>panr</a></span></div></div></footer><script type=text/javascript src=/bundle.min.js></script></div></body></html>

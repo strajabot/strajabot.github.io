@@ -1,0 +1,288 @@
+<!doctype html><html lang=en><head><title>RISC-V: Fast Scalar strchrnul() in Assembly :: Terminal</title>
+<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><meta name=description content="In this article, we will write a performance optimized strchrnul() in RISC-V assembly"><meta name=keywords content="RISC-V,Assembly,strchrnul"><meta name=robots content="noodp"><link rel=canonical href=https://strajabot.com/posts/fast-scalar-strchrnul-riscv/><link rel=stylesheet href=https://strajabot.com/styles.css><link rel="shortcut icon" href=https://strajabot.com/img/theme-colors/pink.png><link rel=apple-touch-icon href=https://strajabot.com/img/theme-colors/pink.png><meta name=twitter:card content="summary"><meta property="og:locale" content="en"><meta property="og:type" content="article"><meta property="og:title" content="RISC-V: Fast Scalar strchrnul() in Assembly"><meta property="og:description" content="In this article, we will write a performance optimized strchrnul() in RISC-V assembly"><meta property="og:url" content="https://strajabot.com/posts/fast-scalar-strchrnul-riscv/"><meta property="og:site_name" content="Terminal"><meta property="og:image" content="https://strajabot.com/"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="627"><meta property="article:published_time" content="2024-07-31 18:52:31 +0200 CEST"></head><body class=pink><div class="container center headings--one-size"><header class=header><div class=header__inner><div class=header__logo><a href=/><div class=logo>Strajabot</div></a></div><ul class="menu menu--mobile"><li class=menu__trigger>Menu&nbsp;▾</li><li><ul class=menu__dropdown><li><a href=/about>About</a></li><li><a href=/showcase>Showcase</a></li></ul></li></ul></div><nav class=navigation-menu><ul class="navigation-menu__inner menu--desktop"><li><a href=/about>About</a></li><li><a href=/showcase>Showcase</a></li></ul></nav></header><div class=content><article class=post><h1 class=post-title><a href=https://strajabot.com/posts/fast-scalar-strchrnul-riscv/>RISC-V: Fast Scalar strchrnul() in Assembly</a></h1><div class=post-meta><time class=post-date>2024-07-31</time><span class=post-author>strajabot</span><span class=post-reading-time>11 min read (2169 words)</span></div><span class=post-tags>#<a href=https://strajabot.com/tags/risc-v/>RISC-V</a>&nbsp;
+#<a href=https://strajabot.com/tags/assembly/>Assembly</a>&nbsp;
+#<a href=https://strajabot.com/tags/gsoc2024/>GSoC2024</a>&nbsp;</span><div class=post-content><div><h2 id=what-is-strchrnul->What is strchrnul() ?<a href=#what-is-strchrnul- class=hanchor arialabel=Anchor>&#8983;</a></h2><p><code>char* strchrnul(const char* s, int c);</code> is a <a href=https://man.freebsd.org/cgi/man.cgi?strchr(3)>FreeBSD libc string function</a> that was first implemented as a GNU extension in glibc 2.1.1. This function is an extension of the <code>strchr()</code> function. The difference between the two functions can be found in the <a href=https://man.freebsd.org/cgi/man.cgi?strchr(3)#end>RETURN VALUES</a> section of the manpage:</p><blockquote><p>The functions <code>strchr()</code> and <code>strrchr()</code> return a pointer to the located character, or NULL if the character does not appear in the string.</p><p><code>strchrnul()</code> returns a pointer to the terminating <code>'\0'</code> if the character does not appear in the string.</p></blockquote><p>This makes it really easy to use <code>strchrnul()</code> to implement the regular <code>strchr()</code> by checking the input character <code>c</code> and the return value of <code>strchrnul()</code></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#66d9ef>char</span><span style=color:#f92672>*</span> <span style=color:#a6e22e>strchr</span>(<span style=color:#66d9ef>const</span> <span style=color:#66d9ef>char</span><span style=color:#f92672>*</span> s, <span style=color:#66d9ef>int</span> c) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>char</span><span style=color:#f92672>*</span> ptr <span style=color:#f92672>=</span> <span style=color:#a6e22e>strchrnul</span>(s, c);
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>return</span> <span style=color:#f92672>*</span>ptr <span style=color:#f92672>==</span> (<span style=color:#66d9ef>char</span>)c <span style=color:#f92672>?</span> ptr : NULL;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>In fact, this is <a href=https://github.com/freebsd/freebsd-src/blob/b7312c3df83df96662e83aaa0eaadda7ef66c8e3/lib/libc/string/strchr.c#L29-L34>how strchr() is implemented</a> in FreeBSD libc.</p><p>Writing a fast <code>strchrnul()</code> leads to a fast implemenation of <code>strchr()</code>, without duplicating code. To completely understand how this implemntation works, I suggest reading the <a href=http://localhost:1313/posts/fast-scalar-strlen-riscv/>strlen() article</a>.</p><h2 id=spliting-the-work>Spliting the work<a href=#spliting-the-work class=hanchor arialabel=Anchor>&#8983;</a></h2><p>Similarly to what we did for the strlen() implementation, we want to do utilize the <code>ld</code> instruction to load up to 8 characters at a time and check for <code>c</code> and <code>'\0'</code> using has_zero().
+As was previously disscussed, a <code>ld</code> instruction behaves consistently on all platforms only when the address of the load is aligned to an eightbyte (<code>address % 8 == 0</code>).</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>/*
+ * a0 - const char* s
+ * a1 - int c;
+ */
+.globl strchrnul
+.type strchrnul, @function
+strchrnul:
+    /*
+     * a0 - const char* ptr;
+     * a1 - char cccccccc[8];
+     * a2 - char iter[8];
+     * a3 - char iter_end[8]
+     */
+
+    /* ... */
+</code></pre><p>According to the RISC-V calling convention we accept the <code>s</code> pointer thru the <code>a0</code> register, and <code>c</code> thru the <code>a1</code> register. We will aditionally use the <code>a2</code> calculations needed to find <code>c</code>. We will also use the <code>a3</code> register calculations needed for finding <code>'\0'</code> (end of string).</p><p>First thing we need to take care of is the type of <code>c</code>. Because the C declaration of <code>strchrnul</code> declares <code>c</code> as an <code>int</code> and not a <code>char</code>, The calling code will pass a 32-bit value thru <code>a1</code>. FreeBSD works with 8-bit characters, so we will first mask everything that doesn&rsquo;t belong to the first byte.</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>    /* ... */
+
+    /* int -&gt; char */
+    andi a1, a1, 0xFF
+
+    /* t0 = 0x0101010101010101 */
+    li t0, 0x01010101
+    slli t1, t0, 32
+    or t0, t0, t1
+
+    /* t1 = 0x8080808080808080 */
+    slli t1, t0, 7
+
+    /* spread char across bytes */
+    mul a1, a1, t0
+
+    /* ... */
+</code></pre><p>If we take a careful look at the declaration of <code>strchrnul()</code> we will see that <code>c</code> is declared as an <code>int</code>.This will cause the C code that calls our function to pass a 32-bit (<em>platform dependant</em>) value in <code>a1</code>. Because of this we &ldquo;cast&rdquo; that value to a char which is a 8-bit (<em>platform dependant</em>) value, trimming the rest of the bits.</p><p>After this we load the <code>0x0101010101010101</code> and <code>0x8080808080808080</code> constants, which are going to be used for has_zero.</p><p>The <code>mul</code> instruction will clone <code>c</code> eight times, filling the register.</p><p>Now we need to handle the alignment of the start of the string.</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>    /* ... */
+
+    /* 1. align_offset */
+    andi t2, a0, 0b111
+
+    /* 2. align pointer */
+    andi a0, a0, ~0b111
+
+    /* 3. if pointer is aligned skip to loop */
+    beqz t2, .Lloop
+
+    /* 4. iter = *ptr */
+    ld a2, (a0)
+
+    /* 5. mask_start calculation */
+    slli t2, t2, 3
+    neg t2, t2
+    srl t2, t0, t2
+
+    /* 6. fill bytes before start with non-zero */
+    or a3, a2, t2
+
+    /* 7. find c setup */
+    xor a2, a2, a1
+    or a2, a2, t2
+
+    /* 8. has_zero for \0 */
+    not t3, a3
+    sub a3, a3, t0
+    and a3, a3, t3
+    and a3, a3, t1
+
+    /* 9. has_zero for c */
+    not t2, a2
+    sub a2, a2, t0
+    and a2, a2, t2
+    and a2, a2, t1
+   
+    /* 10. if \0 or c was found, exit */
+    or a2, a2, a3
+    bnez a2, .Lfind_idx
+
+    /* 11. move to next eightbyte */ 
+    addi a0, a0, 8
+.Lloop:
+    /* ... */
+</code></pre><ol><li>Calculate offset of <code>s</code> from the previous aligned location.<ul><li><code>align_offset = s % 8</code> &lt;=> <code>align_offset = s & 0b111</code>.</li></ul></li><li>Set pointer to previous aligned location.<ul><li><code>ptr = s - (s % 8)</code> &lt;=> <code>ptr = s - (s & 0b111)</code> &lt;=> <code>ptr = s & ~0b111</code></li></ul></li><li>In case that <code>align_offset == 0</code>, <code>ptr = s</code> is already aligned, and we can skip to the loop that doesn&rsquo;t need to consider alignment.</li><li>Now that <code>ptr</code> is guaranteed to be aligned, we can load data from <code>ptr</code> into <code>iter</code></li><li>Because we aligned <code>ptr</code> backwards before loading into <code>iter</code>, it now contains a few bytes that don&rsquo;t belong to the start of the string in the lower bytes of the register. To prevent <code>has_zero</code> from finding <code>c</code> or <code>'\0'</code> in these bytes, we will mask them with a non-zero value. The mask is created by shifting the <code>t0</code> register containing <code>0x01...01</code> to the right by the appropriate number of bits. The calculaton is:<ul><li><code>bits = align_offset * 8</code> &lt;=> <code>bits = align_offset &lt;&lt; 3</code> &lt;=> <code>slli t2, t2, 3</code><ul><li>Convert offset from number of bytes to number of bits.</li></ul></li><li><code>shift = 64 - bits</code> &lt;=> <code>shift = (-bits) & 0b111111</code> &lt;=> <code>neg t2, t2</code><ul><li>the <code>srl</code> instruction <a href=https://five-embeddev.com/riscv-user-isa-manual/Priv-v1.12/rv64.html#integer-computational-instructions>considers only the low 6 bits</a> of <em>rs2</em> for the shift amount, removing the need for <code>& 0b111111</code> in the assembly, resulting in a single <code>neg</code> instruction.</li></ul></li><li><code>mask = 0x0101010101010101 >> shift</code> &lt;=> <code>srl t2, t0, t2</code></li></ul></li><li>Write the masked value to <code>iter_end</code>.</li><li>We want to find the first <code>c</code> in <code>iter</code>. To do this we first <code>iter = iter ^ cccccccc</code> which will cause all bytes that contain <code>c</code> to become <code>'\0'</code>. Afterwards we mask the bytes before the start of the string, to prevent finding <code>c</code> before the start of the string.</li><li>Use <code>has_zero</code> to check for <code>'\0'</code>.</li><li>Use <code>has_zero</code> to check for <code>c</code>.</li><li>If either of the <code>has_zero</code> calculations returned a non-zero we want to find the first set bit, because it corresponds to the first appearance of <code>'\0'</code> or <code>c</code>. <code>or</code> the two registers together and run <code>find_idx</code> on that value.</li><li>Neither <code>'\0'</code> or <code>c</code> was found, prepare for loop by moving <code>ptr</code> to the next eightbyte</li></ol><h2 id=removing-data-hazards>Removing data hazards<a href=#removing-data-hazards class=hanchor arialabel=Anchor>&#8983;</a></h2><p>Generally, pipelined processors execute instructions faster when we avoid data hazards. One example of getting better performance by avoiding data hazards is the SiFive FU740:</p><blockquote><p>The pipeline implements a flexible dual-instruction-issue scheme. <strong>Provided there are no data hazards</strong> between a pair of instructions, the <strong>two instructions may issue in the same cycle</strong>, provided the following constraints are met: &mldr;</p></blockquote><p>In case of the FU740 core, we can get up to double the performance out of the same code, if we reorder it to avoid data hazards. The two iterations of <code>has_zero</code> we wrote above have data hazards between every instruction. This will lead to the core executing one instruction at a time. We can fix this by interleaving the two iterations of <code>has_zero</code> together, resulting in the following code:</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>
+    /* ... */
+
+    /* 1. align_offset */
+    andi t2, a0, 0b111
+
+    /* 2. align pointer */
+    andi a0, a0, ~0b111
+
+    /* 3. if pointer is aligned skip to loop */
+    beqz t2, .Lloop
+
+    /* 4. iter = *ptr */
+    ld a2, (a0)
+
+    /* 5. mask_start calculation */
+    slli t2, t2, 3
+    neg t2, t2
+    srl t2, t0, t2
+
+    /* 6. fill bytes before start with non-zero */
+    or a3, a2, t2
+
+    /* 7. find c setup */
+    xor a2, a2, a1
+    or a2, a2, t2
+
+    /* 8. and 9. has_zero for both \0 and c */
+    not t3, a3
+    not t2, a2
+    sub a3, a3, t0
+    sub a2, a2, t0
+    and a3, a3, t3
+    and a2, a2, t2
+    and a3, a3, t1
+    and a2, a2, t1
+   
+    or a2, a2, a3
+    addi a0, a0, 8
+    bnez a2, .Lfind_idx
+
+.Lloop:
+    /* ... */
+</code></pre><p>We also avoided the data hazard between the <code>or a2, a2, a3</code> and <code>bnez a2, .Lfind_idx</code> instruction, by moving the <code>addi a0, a0, 8</code> in between them. We just need to remember to first <code>addi a0, a0 -8</code> inside <code>.Lfind_idx</code>. These data hazards will make a small difference here, because the code runs at most once per <code>strchrnul()</code> call, but will make a lot of difference inside of <code>.Lloop</code>.</p><h2 id=the-loop>The loop<a href=#the-loop class=hanchor arialabel=Anchor>&#8983;</a></h2><p>The loop is pretty much the same code as with the start, except we can remove all the extra computations for <code>mask_start</code> leading to the following code:</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>    /* ... */
+
+.Lloop:
+    ld a2, (a0)
+
+    /* has_zero for both \0 or c */
+    xor a3, a2, a1
+
+    not t2, a2
+    not t3, a3
+    sub a2, a2, t0
+    sub a3, a3, t0
+    and a2, a2, t2
+    and a3, a3, t3
+    and a2, a2, t1
+    and a3, a3, t1
+
+    /* if \0 or c was found, exit */
+    or a2, a2, a3
+    addi a0, a0, 8
+    beqz a2, .Lloop
+
+.Lfind_idx:
+    /* ... */
+</code></pre><h2 id=finding-the-index-of-the-first-charachter>Finding the index of the first charachter<a href=#finding-the-index-of-the-first-charachter class=hanchor arialabel=Anchor>&#8983;</a></h2><p>The code for finding the index of the first character (<code>'\0'</code> or <code>c</code>). We already solved this problem in <code>strlen()</code>, so we are just going to adapt that code. First we need to add the <code>addi a0, a0, -8</code> instruction to move <code>ptr</code> back because it is pointing to the eightbyte for the next iteration, and not the one we terminated on. Also after finding the byte index inside of <code>iter</code> we want to add that index to <code>ptr</code> to find the resulting pointer and return that pointer thru <code>a0</code>.</p><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>    /* ... */
+
+.Lfind_idx:
+    addi a0, a0, -8
+
+    /* isolate lowest set bit */
+    neg t0, a2
+    and a2, a2, t0
+
+    li t0, 0x0001020304050607
+    srli a2, a2, 7
+
+    /* lowest set bit is 2^(8*k)
+     * multiplying by it shifts the idx array in t0 by k bytes to the left */
+    mul	a2, a2, t0
+
+    /* highest byte contains idx of first zero */
+    srli a2, a2, 56
+
+    add a0, a0, a2
+    ret
+</code></pre><p>Now that we understand the algorithm we can complete the implementation.</p><h2 id=final-code>Final code<a href=#final-code class=hanchor arialabel=Anchor>&#8983;</a></h2><pre tabindex=0><code class=language-riscvasm data-lang=riscvasm>/*
+ * a0 - const char* s
+ * a1 - int c;
+ */
+.globl strchrnul
+.type strchrnul, @function
+strchrnul:
+    /*
+     * a0 - const char* ptr;
+     * a1 - char cccccccc[8];
+     * a2 - char iter[8];
+     * a3 - char iter_end[8]
+     */
+
+    /* int -&gt; char */
+    andi a1, a1, 0xFF
+
+    /* t0 = 0x0101010101010101 */
+    li t0, 0x01010101
+    slli t1, t0, 32
+    or t0, t0, t1
+
+    /* t1 = 0x8080808080808080 */
+    slli t1, t0, 7
+
+    /* spread char across bytes */
+    mul a1, a1, t0
+
+    /* align_offset */
+    andi t2, a0, 0b111
+
+    /* align pointer */
+    andi a0, a0, ~0b111
+
+    /* if pointer is aligned skip to loop */
+    beqz t2, .Lloop
+
+    /* iter = *ptr */
+    ld a2, (a0)
+
+    /* mask_start calculation */
+    slli t2, t2, 3
+    neg t2, t2
+    srl t2, t0, t2
+
+    /* fill bytes before start with non-zero */
+    or a3, a2, t2
+
+    /* find c setup */
+    xor a2, a2, a1
+    or a2, a2, t2
+
+    /* has_zero for both \0 and c */
+    not t3, a3
+    not t2, a2
+    sub a3, a3, t0
+    sub a2, a2, t0
+    and a3, a3, t3
+    and a2, a2, t2
+    and a3, a3, t1
+    and a2, a2, t1
+   
+    or a2, a2, a3
+    addi a0, a0, 8
+    bnez a2, .Lfind_idx
+
+.Lloop:
+    ld a2, (a0)
+
+    /* has_zero for both \0 or c */
+    xor a3, a2, a1
+
+    not t2, a2
+    not t3, a3
+    sub a2, a2, t0
+    sub a3, a3, t0
+    and a2, a2, t2
+    and a3, a3, t3
+    and a2, a2, t1
+    and a3, a3, t1
+
+    /* if \0 or c was found, exit */
+    or a2, a2, a3
+    addi a0, a0, 8
+    beqz a2, .Lloop
+
+.Lfind_idx:
+    addi a0, a0, -8
+
+    /* isolate lowest set bit */
+    neg t0, a2
+    and a2, a2, t0
+
+    li t0, 0x0001020304050607
+    srli a2, a2, 7
+
+    /* lowest set bit is 2^(8*k)
+     * multiplying by it shifts the idx array in t0 by k bytes to the left */
+    mul	a2, a2, t0
+
+    /* highest byte contains idx of first zero */
+    srli a2, a2, 56
+
+    add a0, a0, a2
+    ret
+</code></pre><h2 id=performance-metrics>Performance metrics<a href=#performance-metrics class=hanchor arialabel=Anchor>&#8983;</a></h2><p>Performance was measured on a SiFive Unmatched development board using strperf.</p><ul><li>The FreeBSD C <a href=https://github.com/freebsd/freebsd-src/blob/main/lib/libc/string/strchrnul.c>base implementation</a> is the multiplatfrom implementation. It’s used for the kernel, and when a machine dependent implementation doesn’t exist.</li><li>RISC-V <a href=https://github.com/strajabot/freebsd-src/blob/0e2a27ba92832bd52790dcc255a68a0741119667/lib/libc/riscv/string/strchrnul.S>optimized implementation</a> is the one from this article.</li></ul><pre tabindex=0><code>| In B/s  | FreeBSD base impl	| RISC-V optimized impl		       |
+|---------|---------------------|--------------------------------------|
+| Short   |	   183.8Mi ± 5%	| 287.2Mi ± 0%  +56.27% (p=0.000 n=20) |
+| Mid     |	   397.3Mi ± 3%	| 564.6Mi ± 0%  +42.12% (p=0.000 n=20) |
+| Long    |	   820.5Mi ± 0%	| 902.5Mi ± 0%   +9.99% (p=0.000 n=20) |
+| geomean |	   391.3Mi	| 527.0Mi       +34.68%		       |
+</code></pre><h2 id=further-reading>Further reading<a href=#further-reading class=hanchor arialabel=Anchor>&#8983;</a></h2><ul><li><a href=https://graphics.stanford.edu/~seander/bithacks.html>Sean Eron Anderson - Bit Twiddling Hacks</a></li><li><a href=https://www.amazon.com/Hackers-Delight-2nd-Henry-Warren/dp/0321842685>Henry Warren- Hacker&rsquo;s Delight</a></li><li><a href=https://riscv.org/wp-content/uploads/2017/05/riscv-spec-v2.2.pdf>RISC-V User ISA</a></li><li><a href=https://five-embeddev.com/quickref/instructions.html#-rv64>RISC-V Instruction Quick Reference</a></li></ul></div></div><div class=pagination><div class=pagination__title><span class=pagination__title-h>Read other posts</span><hr></div><div class=pagination__buttons><span class="button next"><a href=https://strajabot.com/posts/fast-scalar-strlen-riscv/><span class=button__text>RISC-V: Fast Scalar strlen() in Assembly</span>
+<span class=button__icon>→</span></a></span></div></div></article></div><footer class=footer><div class=footer__inner><div class=copyright><span>© 2024 Powered by <a href=https://gohugo.io>Hugo</a></span>
+<span>:: <a href=https://github.com/panr/hugo-theme-terminal target=_blank>Theme</a> made by <a href=https://github.com/panr target=_blank>panr</a></span></div></div></footer><script type=text/javascript src=/bundle.min.js></script></div></body></html>
